@@ -83,7 +83,7 @@ export default function LandingPage() {
         </button>
 
         <p style={styles.footerNote}>
-          Powered by Django + React &nbsp;•&nbsp; Secure &amp; Encrypted
+          DEVELOP BY ZURIEL &nbsp;•&nbsp; Secure &amp; Encrypted
         </p>
       </div>
 
