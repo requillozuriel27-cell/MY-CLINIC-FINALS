@@ -1,12 +1,13 @@
 from django.conf import settings
 from django.contrib.auth import authenticate
+from django.db.models import Q
 from rest_framework import status, generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import CustomUser, DoctorProfile
+from .models import CustomUser, DoctorProfile, PatientProfile
 from .serializers import RegisterSerializer, UserSerializer
 
 
@@ -48,26 +49,12 @@ class LoginView(APIView):
             )
 
         user = authenticate(username=username, password=password)
-
-        if user is None:
+        if user is None or not user.is_active or user.role == 'admin':
             return Response(
                 {'error': 'Invalid username or password'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        if not user.is_active:
-            return Response(
-                {'error': 'Invalid username or password'},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-
-        if user.role == 'admin':
-            return Response(
-                {'error': 'Invalid username or password'},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-
-        # Always generate fresh tokens
         tokens = get_tokens_for_user(user)
         return Response({
             'access': tokens['access'],
@@ -100,7 +87,6 @@ class AdminLoginView(APIView):
             )
 
         user = authenticate(username=username, password=password)
-
         if user is None or not user.is_active or user.role != 'admin':
             return Response(
                 {'error': 'Invalid username or password'},
@@ -157,11 +143,11 @@ class UserListView(generics.ListAPIView):
         if role:
             qs = qs.filter(role=role)
         if search:
-            qs = (
-                qs.filter(username__icontains=search) |
-                qs.filter(first_name__icontains=search) |
-                qs.filter(last_name__icontains=search) |
-                qs.filter(email__icontains=search)
+            qs = qs.filter(
+                Q(username__icontains=search) |
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(email__icontains=search)
             )
         return qs
 
@@ -170,6 +156,110 @@ class UserDetailView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = UserSerializer
     queryset = CustomUser.objects.all()
+
+
+class SearchPatientView(APIView):
+    """
+    Admin searches patients by name, username, email, or patient ID.
+    Fixed: handles patients with no profile gracefully.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.role != 'admin':
+            return Response({'error': 'Unauthorized.'}, status=403)
+
+        query = request.query_params.get('q', '').strip()
+
+        if not query:
+            return Response(
+                {'error': 'Please type a name to search.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(query) < 2:
+            return Response(
+                {'error': 'Search must be at least 2 characters.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            # Build search query safely
+            # Search by name, username, email first
+            name_query = Q(first_name__icontains=query) | \
+                         Q(last_name__icontains=query) | \
+                         Q(username__icontains=query) | \
+                         Q(email__icontains=query)
+
+            # Also search by patient_id but only if patient has a profile
+            # Use try/except per patient to avoid crashing
+            patients = CustomUser.objects.filter(
+                role='patient'
+            ).filter(name_query).distinct().select_related('patient_profile')
+
+            # If no results by name, try patient_id number search
+            if not patients.exists() and query.isdigit():
+                patients = CustomUser.objects.filter(
+                    role='patient',
+                    patient_profile__patient_id=query
+                ).select_related('patient_profile')
+
+            # If still no results, try partial patient_id search
+            if not patients.exists():
+                try:
+                    patients = CustomUser.objects.filter(
+                        role='patient',
+                        patient_profile__patient_id__icontains=query
+                    ).select_related('patient_profile')
+                except Exception:
+                    pass
+
+            if not patients.exists():
+                return Response(
+                    {
+                        'results': [],
+                        'total_patients_found': 0,
+                        'query': query,
+                        'error': f'No patient found matching "{query}".'
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            # Build results with medical records
+            from records.models import MedicalRecord
+            from records.serializers import MedicalRecordSerializer
+
+            results = []
+            for patient in patients:
+                serializer = UserSerializer(patient)
+                records = MedicalRecord.objects.filter(
+                    patient=patient
+                ).order_by('-created_at')
+                records_data = MedicalRecordSerializer(records, many=True).data
+
+                results.append({
+                    'patient': serializer.data,
+                    'medical_records': records_data,
+                    'total_records': len(records_data),
+                })
+
+            return Response({
+                'results': results,
+                'total_patients_found': len(results),
+                'query': query,
+            })
+
+        except Exception as e:
+            # Never crash — always return a clean error
+            return Response(
+                {
+                    'results': [],
+                    'total_patients_found': 0,
+                    'query': query,
+                    'error': f'Search error: {str(e)}',
+                },
+                status=status.HTTP_200_OK,
+            )
 
 
 class SoftDeleteUserView(APIView):
@@ -203,23 +293,19 @@ class RestoreUserView(APIView):
 
 
 class ResetPasswordView(APIView):
-    """Admin resets any user password."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
         if request.user.role != 'admin':
             return Response(
-                {'error': 'Only admins can reset passwords.'},
-                status=403,
+                {'error': 'Only admins can reset passwords.'}, status=403
             )
-
         new_password = request.data.get('new_password', '').strip()
         if not new_password or len(new_password) < 6:
             return Response(
                 {'error': 'Password must be at least 6 characters.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
         try:
             user = CustomUser.objects.get(pk=pk)
             user.set_password(new_password)

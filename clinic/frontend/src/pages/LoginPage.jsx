@@ -3,219 +3,408 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import api from '../api/axios'
 
+const ROLES = [
+  {
+    key: 'patient',
+    label: 'Patient',
+    icon: '👤',
+    description: 'Book & manage appointments',
+  },
+  {
+    key: 'doctor',
+    label: 'Doctor',
+    icon: '🩺',
+    description: 'Manage your schedule',
+  },
+  {
+    key: 'admin',
+    label: 'Admin',
+    icon: '🛡️',
+    description: 'Full system access',
+  },
+]
+
 export default function LoginPage() {
   const navigate = useNavigate()
   const { login } = useAuth()
 
-  const [form, setForm] = useState({ username: '', password: '' })
+  const [role, setRole] = useState('patient')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [adminCode, setAdminCode] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  // Admin section toggle
-  const [showAdmin, setShowAdmin] = useState(false)
-  const [adminForm, setAdminForm] = useState({
-    username: '', password: '', special_code: ''
-  })
-  const [adminError, setAdminError] = useState('')
-  const [adminLoading, setAdminLoading] = useState(false)
-
-  const handleLogin = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
+
+    // Validate fields
+    if (!username.trim()) {
+      setError('Please enter your username.')
+      return
+    }
+    if (!password.trim()) {
+      setError('Please enter your password.')
+      return
+    }
+    if (role === 'admin' && !adminCode.trim()) {
+      setError('Admin access code is required.')
+      return
+    }
+
     setLoading(true)
+
     try {
-      const res = await api.post('/auth/login/', form)
+      let res
+
+      if (role === 'admin') {
+        // Admin login endpoint
+        res = await api.post('/auth/admin-login/', {
+          username: username.trim(),
+          password: password.trim(),
+          special_code: adminCode.trim(),
+        })
+      } else {
+        // Patient and Doctor use same login endpoint
+        res = await api.post('/auth/login/', {
+          username: username.trim(),
+          password: password.trim(),
+        })
+      }
+
+      // Save auth data
       login(res.data)
-      const routes = { doctor: '/doctor', patient: '/patient' }
-      navigate(routes[res.data.role] || '/patient')
+
+      // Navigate based on actual role returned from server
+      const actualRole = res.data.role
+      if (actualRole === 'admin') {
+        navigate('/admin', { replace: true })
+      } else if (actualRole === 'doctor') {
+        navigate('/doctor', { replace: true })
+      } else {
+        navigate('/patient', { replace: true })
+      }
+
     } catch (err) {
-      setError(err.response?.data?.error || 'Invalid username or password')
-      setForm(f => ({ ...f, password: '' }))
+      const msg = err.response?.data?.error || 'Invalid username or password'
+      setError(msg)
+      setPassword('')
+      setAdminCode('')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleAdminLogin = async (e) => {
-    e.preventDefault()
-    setAdminError('')
-    setAdminLoading(true)
-    try {
-      const res = await api.post('/auth/admin-login/', adminForm)
-      login(res.data)
-      navigate('/admin')
-    } catch (err) {
-      setAdminError(err.response?.data?.error || 'Invalid username or password')
-      setAdminForm(f => ({ ...f, password: '', special_code: '' }))
-    } finally {
-      setAdminLoading(false)
-    }
-  }
-
   const inp = {
-    width: '100%', padding: '10px 14px',
-    border: '1.5px solid #e5e7eb', borderRadius: 8,
-    fontSize: 14, color: '#000', fontWeight: 'bold', background: 'white',
+    width: '100%',
+    padding: '11px 14px',
+    border: '1.5px solid #e5e7eb',
+    borderRadius: 8,
+    fontSize: 14,
+    color: '#000',
+    fontWeight: 'bold',
+    background: 'white',
+    outline: 'none',
+    transition: 'border-color 0.2s',
+    boxSizing: 'border-box',
   }
 
   return (
     <div style={{
-      minHeight: '100vh', background: '#f0fdf4',
-      display: 'flex', alignItems: 'center',
-      justifyContent: 'center', padding: 20,
+      minHeight: '100vh',
+      background: '#f0fdf4',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 20,
     }}>
       <div style={{ width: '100%', maxWidth: 440 }}>
 
         {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div style={{ fontSize: 40, marginBottom: 10 }}>🏥</div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, color: '#14532d' }}>
+        <div style={{ textAlign: 'center', marginBottom: 20 }}>
+          <img
+            src="/logo.png"
+            alt="Clinic Logo"
+            style={{
+              width: 70, height: 70,
+              borderRadius: '50%',
+              objectFit: 'cover',
+              border: '3px solid #16a34a',
+              marginBottom: 10,
+              boxShadow: '0 4px 12px rgba(22,163,74,0.2)',
+            }}
+            onError={e => {
+              e.target.style.display = 'none'
+            }}
+          />
+          <h1 style={{
+            fontSize: 20, fontWeight: 800,
+            color: '#14532d', marginBottom: 2,
+          }}>
             Clinic Appointment System
           </h1>
-          <p style={{ color: '#6b7280', fontSize: 13, marginTop: 4, fontWeight: 600 }}>
+          <p style={{ color: '#16a34a', fontSize: 13, fontWeight: 700 }}>
             Poblacion Danao Bohol
           </p>
         </div>
 
-        {/* Patient / Doctor Login */}
+        {/* Login Card */}
         <div style={{
-          background: 'white', borderRadius: 14, padding: 28,
-          border: '1px solid #e5e7eb', marginBottom: 16,
-          boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
+          background: 'white',
+          borderRadius: 16,
+          padding: 24,
+          border: '1px solid #e5e7eb',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.07)',
         }}>
-          <h2 style={{ fontSize: 17, fontWeight: 700, color: '#111827', marginBottom: 20 }}>
-            Patient / Doctor Login
-          </h2>
 
-          {error && <div className="alert-error">{error}</div>}
+          {/* Role Selector */}
+          <div style={{ marginBottom: 20 }}>
+            <p style={{
+              fontSize: 11, fontWeight: 700, color: '#6b7280',
+              textTransform: 'uppercase', letterSpacing: 0.8,
+              marginBottom: 10, textAlign: 'center',
+            }}>
+              Login as
+            </p>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 1fr',
+              gap: 8,
+            }}>
+              {ROLES.map(r => (
+                <button
+                  key={r.key}
+                  type="button"
+                  onClick={() => {
+                    setRole(r.key)
+                    setError('')
+                    setAdminCode('')
+                  }}
+                  style={{
+                    padding: '10px 6px',
+                    border: role === r.key
+                      ? '2px solid #16a34a'
+                      : '2px solid #e5e7eb',
+                    borderRadius: 10,
+                    background: role === r.key ? '#f0fdf4' : 'white',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <span style={{ fontSize: 22 }}>{r.icon}</span>
+                  <span style={{
+                    fontSize: 12, fontWeight: 700,
+                    color: role === r.key ? '#16a34a' : '#374151',
+                  }}>
+                    {r.label}
+                  </span>
+                  <span style={{
+                    fontSize: 10, fontWeight: 600,
+                    color: role === r.key ? '#16a34a' : '#9ca3af',
+                    textAlign: 'center', lineHeight: 1.3,
+                  }}>
+                    {r.description}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
 
-          <form onSubmit={handleLogin}>
-            <div className="form-group">
-              <label>Username</label>
+          {/* Active role indicator */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            background: '#f0fdf4', borderRadius: 8,
+            padding: '8px 12px', marginBottom: 16,
+            border: '1px solid #bbf7d0',
+          }}>
+            <span style={{ fontSize: 16 }}>
+              {ROLES.find(r => r.key === role)?.icon}
+            </span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#14532d' }}>
+              Logging in as{' '}
+              <strong>{ROLES.find(r => r.key === role)?.label}</strong>
+            </span>
+          </div>
+
+          {/* Error message */}
+          {error && (
+            <div style={{
+              background: '#fef2f2',
+              border: '1.5px solid #fca5a5',
+              borderRadius: 8,
+              padding: '10px 14px',
+              color: '#dc2626',
+              fontSize: 13,
+              fontWeight: 700,
+              marginBottom: 16,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}>
+              <span style={{ fontSize: 16 }}>⚠️</span>
+              {error}
+            </div>
+          )}
+
+          {/* Form */}
+          <form onSubmit={handleSubmit} noValidate>
+
+            {/* Username */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{
+                display: 'block', fontSize: 13,
+                fontWeight: 700, color: '#374151', marginBottom: 6,
+              }}>
+                Username
+              </label>
               <input
-                style={inp} type="text"
+                style={inp}
+                type="text"
                 placeholder="Enter your username"
-                value={form.username}
-                onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
-                required autoComplete="username"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                onFocus={e => e.target.style.borderColor = '#16a34a'}
+                onBlur={e => e.target.style.borderColor = '#e5e7eb'}
+                autoComplete="username"
+                autoCapitalize="none"
               />
             </div>
-            <div className="form-group">
-              <label>Password</label>
+
+            {/* Password */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{
+                display: 'block', fontSize: 13,
+                fontWeight: 700, color: '#374151', marginBottom: 6,
+              }}>
+                Password
+              </label>
               <input
-                style={inp} type="password"
+                style={inp}
+                type="password"
                 placeholder="Enter your password"
-                value={form.password}
-                onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                required autoComplete="current-password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                onFocus={e => e.target.style.borderColor = '#16a34a'}
+                onBlur={e => e.target.style.borderColor = '#e5e7eb'}
+                autoComplete="current-password"
               />
             </div>
+
+            {/* Admin Access Code */}
+            {role === 'admin' && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{
+                  display: 'block', fontSize: 13,
+                  fontWeight: 700, color: '#374151', marginBottom: 6,
+                }}>
+                  🛡️ Admin Access Code
+                </label>
+                <input
+                  style={{
+                    ...inp,
+                    border: '1.5px solid #16a34a',
+                    background: '#f0fdf4',
+                  }}
+                  type="password"
+                  placeholder="Enter admin access code"
+                  value={adminCode}
+                  onChange={e => setAdminCode(e.target.value)}
+                  onFocus={e => e.target.style.borderColor = '#15803d'}
+                  onBlur={e => e.target.style.borderColor = '#16a34a'}
+                  autoComplete="off"
+                />
+                <p style={{
+                  fontSize: 11, color: '#6b7280',
+                  fontWeight: 600, marginTop: 4,
+                }}>
+                  Required for admin authentication only.
+                </p>
+              </div>
+            )}
+
+            {/* Submit button */}
             <button
-              type="submit" className="btn-primary"
+              type="submit"
               disabled={loading}
-              style={{ width: '100%', padding: 11, fontSize: 15, marginTop: 4 }}
+              style={{
+                width: '100%',
+                padding: '12px',
+                background: loading ? '#9ca3af' : '#16a34a',
+                color: 'white',
+                border: 'none',
+                borderRadius: 10,
+                fontWeight: 800,
+                fontSize: 15,
+                cursor: loading ? 'not-allowed' : 'pointer',
+                transition: 'background 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                marginTop: 6,
+              }}
+              onMouseEnter={e => {
+                if (!loading) e.currentTarget.style.background = '#15803d'
+              }}
+              onMouseLeave={e => {
+                if (!loading) e.currentTarget.style.background = '#16a34a'
+              }}
             >
-              {loading ? 'Logging in…' : 'Login'}
+              {loading ? (
+                <span>⏳ Logging in…</span>
+              ) : (
+                <span>
+                  {ROLES.find(r => r.key === role)?.icon}{' '}
+                  Login as {ROLES.find(r => r.key === role)?.label}
+                </span>
+              )}
             </button>
           </form>
 
-          <p style={{
-            textAlign: 'center', marginTop: 16,
-            fontSize: 13, color: '#6b7280', fontWeight: 600
-          }}>
-            No account yet?{' '}
-            <Link to="/register" style={{ color: '#16a34a', fontWeight: 700 }}>
-              Register here
-            </Link>
-          </p>
+          {/* Register link — patient only */}
+          {role === 'patient' && (
+            <p style={{
+              textAlign: 'center', marginTop: 14,
+              fontSize: 13, color: '#6b7280', fontWeight: 600,
+            }}>
+              No account yet?{' '}
+              <Link to="/register" style={{ color: '#16a34a', fontWeight: 800 }}>
+                Register here
+              </Link>
+            </p>
+          )}
+
+          {role === 'doctor' && (
+            <p style={{
+              textAlign: 'center', marginTop: 14,
+              fontSize: 12, color: '#9ca3af', fontWeight: 600,
+            }}>
+              Doctor accounts are created by the clinic administrator.
+            </p>
+          )}
+
+          {role === 'admin' && (
+            <p style={{
+              textAlign: 'center', marginTop: 14,
+              fontSize: 12, color: '#9ca3af', fontWeight: 600,
+            }}>
+              Admin access requires a special authorization code.
+            </p>
+          )}
+
         </div>
 
-        {/* Admin Login Toggle Button */}
-        {!showAdmin && (
-          <button
-            onClick={() => setShowAdmin(true)}
-            style={{
-              width: '100%', padding: '12px',
-              background: 'white', border: '2px solid #16a34a',
-              borderRadius: 10, color: '#14532d', fontWeight: 700,
-              fontSize: 14, cursor: 'pointer',
-              display: 'flex', alignItems: 'center',
-              justifyContent: 'center', gap: 8,
-            }}
-          >
-            🔧 Admin Login Only
-          </button>
-        )}
-
-        {/* Admin Login Form */}
-        {showAdmin && (
-          <div style={{
-            background: 'white', borderRadius: 14, padding: 28,
-            border: '2px solid #16a34a',
-            boxShadow: '0 2px 12px rgba(22,163,74,0.1)',
-          }}>
-            <div style={{
-              display: 'flex', alignItems: 'center',
-              gap: 8, marginBottom: 20,
-            }}>
-              <span style={{ fontSize: 18 }}>🔧</span>
-              <h2 style={{ fontSize: 17, fontWeight: 700, color: '#14532d' }}>
-                Admin Login
-              </h2>
-              <span style={{
-                marginLeft: 'auto', background: '#dcfce7',
-                color: '#166534', fontSize: 11, fontWeight: 700,
-                padding: '2px 8px', borderRadius: 999,
-              }}>
-                STAFF ONLY
-              </span>
-              <button
-                onClick={() => { setShowAdmin(false); setAdminError('') }}
-                style={{
-                  background: 'none', border: 'none',
-                  fontSize: 18, cursor: 'pointer', color: '#6b7280',
-                }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {adminError && <div className="alert-error">{adminError}</div>}
-
-            <form onSubmit={handleAdminLogin}>
-              <div className="form-group">
-                <label>Admin Username</label>
-                <input style={inp} type="text" placeholder="Admin username"
-                  value={adminForm.username}
-                  onChange={e => setAdminForm(f => ({ ...f, username: e.target.value }))}
-                  required />
-              </div>
-              <div className="form-group">
-                <label>Password</label>
-                <input style={inp} type="password" placeholder="Admin password"
-                  value={adminForm.password}
-                  onChange={e => setAdminForm(f => ({ ...f, password: e.target.value }))}
-                  required />
-              </div>
-              <div className="form-group">
-                <label>Admin Access Code</label>
-                <input style={inp} type="password" placeholder="Enter admin code"
-                  value={adminForm.special_code}
-                  onChange={e => setAdminForm(f => ({ ...f, special_code: e.target.value }))}
-                  required />
-              </div>
-              <button type="submit" disabled={adminLoading}
-                style={{
-                  width: '100%', padding: 11, fontSize: 15,
-                  background: '#14532d', color: 'white',
-                  border: 'none', borderRadius: 8,
-                  fontWeight: 700, cursor: 'pointer',
-                }}>
-                {adminLoading ? 'Logging in…' : 'Admin Login'}
-              </button>
-            </form>
-          </div>
-        )}
+        <p style={{
+          textAlign: 'center', marginTop: 14,
+          fontSize: 11, color: '#9ca3af', fontWeight: 600,
+        }}>
+          Secure & Encrypted • Poblacion Danao Bohol Clinic
+        </p>
 
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -7,6 +7,16 @@ import LogoutModal from '../components/LogoutModal'
 import ConfirmModal from '../components/ConfirmModal'
 import NotificationBell from '../components/NotificationBell'
 import MessagingPanel from '../components/MessagingPanel'
+
+// ── Debounce hook ──
+function useDebounce(value, delay) {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(t)
+  }, [value, delay])
+  return debounced
+}
 
 // ── Add Medical Record by Patient Name ──
 function AddMedicalRecord() {
@@ -21,25 +31,34 @@ function AddMedicalRecord() {
   const [saveSuccess, setSaveSuccess] = useState('')
   const [saveError, setSaveError] = useState('')
 
-  const handleSearch = async (e) => {
-    e?.preventDefault()
-    if (!nameQuery.trim() || nameQuery.trim().length < 2) {
-      setSearchError('Please type at least 2 characters.')
+  // Debounce the name query — 500ms delay
+  const debouncedQuery = useDebounce(nameQuery, 500)
+
+  // Auto-search when debounced query changes
+  useEffect(() => {
+    if (!debouncedQuery.trim() || debouncedQuery.trim().length < 2) {
+      setSearchResults([])
+      setSearchError('')
       return
     }
-    setSearchError('')
+    if (selectedPatient) return // Don't search again after selecting
+    doSearch(debouncedQuery.trim())
+  }, [debouncedQuery])
+
+  const doSearch = async (q) => {
     setSearching(true)
     setSearchResults([])
-    setSelectedPatient(null)
-    setSaveSuccess('')
-    setSaveError('')
+    setSearchError('')
     try {
       const res = await api.get(
-        `/patients/search/?q=${encodeURIComponent(nameQuery.trim())}`
+        `/patients/search/?q=${encodeURIComponent(q)}`
       )
-      setSearchResults(res.data.results || [])
-      if ((res.data.results || []).length === 0) {
-        setSearchError(`No patient found matching "${nameQuery}".`)
+      const results = res.data.results || []
+      setSearchResults(results)
+      if (results.length === 0) {
+        setSearchError(
+          res.data.error || `No patient found matching "${q}".`
+        )
       }
     } catch (err) {
       setSearchError(
@@ -48,6 +67,14 @@ function AddMedicalRecord() {
     } finally {
       setSearching(false)
     }
+  }
+
+  const handleManualSearch = () => {
+    if (!nameQuery.trim() || nameQuery.trim().length < 2) {
+      setSearchError('Please type at least 2 characters.')
+      return
+    }
+    doSearch(nameQuery.trim())
   }
 
   const selectPatient = (item) => {
@@ -60,16 +87,13 @@ function AddMedicalRecord() {
     )
     setSaveSuccess('')
     setSaveError('')
+    setSearchError('')
   }
 
   const handleSave = async (e) => {
     e.preventDefault()
     if (!selectedPatient) {
       setSaveError('Please search and select a patient first.')
-      return
-    }
-    if (!recordTitle.trim() || !recordData.trim()) {
-      setSaveError('Record title and data are required.')
       return
     }
     setSaving(true)
@@ -85,7 +109,7 @@ function AddMedicalRecord() {
         ? `${selectedPatient.first_name} ${selectedPatient.last_name}`.trim()
         : selectedPatient.username
       setSaveSuccess(
-        `✅ Medical record saved for ${patientName}. They can now view it in their dashboard.`
+        `✅ Record saved for ${patientName}. They can now view it in their dashboard.`
       )
       setRecordTitle('')
       setRecordData('')
@@ -114,6 +138,13 @@ function AddMedicalRecord() {
       {saveSuccess && (
         <div className="alert-success" style={{ marginBottom: 16 }}>
           {saveSuccess}
+          <button
+            onClick={() => setSaveSuccess('')}
+            style={{
+              float: 'right', background: 'none',
+              border: 'none', cursor: 'pointer',
+              fontWeight: 700, color: '#065f46',
+            }}>✕</button>
         </div>
       )}
       {saveError && (
@@ -122,7 +153,7 @@ function AddMedicalRecord() {
         </div>
       )}
 
-      {/* STEP 1 — Search patient by name */}
+      {/* STEP 1 */}
       <div style={{
         background: '#f9fafb', borderRadius: 10,
         padding: 16, marginBottom: 20,
@@ -133,120 +164,148 @@ function AddMedicalRecord() {
           marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6,
         }}>
           <span style={{
-            background: '#16a34a', color: 'white',
-            borderRadius: '50%', width: 22, height: 22,
-            display: 'inline-flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 12, fontWeight: 700,
+            background: '#16a34a', color: 'white', borderRadius: '50%',
+            width: 22, height: 22, display: 'inline-flex',
+            alignItems: 'center', justifyContent: 'center',
+            fontSize: 12, fontWeight: 700,
           }}>1</span>
           Search Patient by Name
         </div>
 
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            style={inp}
-            type="text"
-            placeholder="Type patient name e.g. Jane, Juan Dela Cruz…"
-            value={nameQuery}
-            onChange={e => {
-              setNameQuery(e.target.value)
-              setSearchError('')
-              if (selectedPatient) setSelectedPatient(null)
-            }}
-            onKeyDown={e => { if (e.key === 'Enter') handleSearch() }}
-            onFocus={e => e.target.style.borderColor = '#16a34a'}
-            onBlur={e => e.target.style.borderColor = '#e5e7eb'}
-          />
-          <button
-            onClick={handleSearch}
-            disabled={searching}
-            className="btn-primary"
-            style={{ padding: '10px 18px', whiteSpace: 'nowrap' }}
-          >
-            {searching ? '⏳' : '🔍 Search'}
-          </button>
-        </div>
-
-        {searchError && (
-          <div style={{
-            marginTop: 8, fontSize: 13,
-            color: '#dc2626', fontWeight: 700,
-          }}>
-            {searchError}
-          </div>
-        )}
-
-        {/* Dropdown results */}
-        {searchResults.length > 0 && (
-          <div style={{
-            marginTop: 8, border: '1px solid #e5e7eb',
-            borderRadius: 8, overflow: 'hidden',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
-            background: 'white',
-          }}>
-            {searchResults.map((item) => (
-              <div
-                key={item.patient.id}
-                onClick={() => selectPatient(item)}
-                style={{
-                  padding: '12px 14px',
-                  borderBottom: '1px solid #f3f4f6',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  transition: 'background 0.15s',
+        <div style={{ position: 'relative' }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ flex: 1, position: 'relative' }}>
+              <input
+                style={inp}
+                type="text"
+                placeholder="Type patient name e.g. Jane, Juan Dela Cruz…"
+                value={nameQuery}
+                onChange={e => {
+                  setNameQuery(e.target.value)
+                  setSearchError('')
+                  if (selectedPatient) setSelectedPatient(null)
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = '#f0fdf4'}
-                onMouseLeave={e => e.currentTarget.style.background = 'white'}
-              >
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleManualSearch()
+                }}
+                onFocus={e => e.target.style.borderColor = '#16a34a'}
+                onBlur={e => e.target.style.borderColor = '#e5e7eb'}
+              />
+              {searching && (
                 <div style={{
-                  width: 38, height: 38, borderRadius: '50%',
-                  background: '#d1fae5', display: 'flex',
-                  alignItems: 'center', justifyContent: 'center',
-                  fontSize: 18, flexShrink: 0,
+                  position: 'absolute', right: 12, top: '50%',
+                  transform: 'translateY(-50%)',
+                  fontSize: 12, color: '#9ca3af', fontWeight: 600,
                 }}>
-                  👤
+                  Searching…
                 </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
-                    {item.patient.first_name} {item.patient.last_name}
-                  </div>
-                  <div style={{
-                    fontSize: 12, color: '#6b7280',
-                    fontWeight: 600, marginTop: 2,
-                  }}>
-                    @{item.patient.username}
-                    {item.patient.patient_profile?.patient_id && (
-                      <span style={{
-                        marginLeft: 8, background: '#dcfce7',
-                        color: '#166534', fontSize: 11, fontWeight: 700,
-                        padding: '1px 8px', borderRadius: 999,
-                      }}>
-                        ID: {item.patient.patient_profile.patient_id}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <span style={{
-                  fontSize: 11, color: '#16a34a', fontWeight: 700,
-                  padding: '3px 10px', background: '#f0fdf4',
-                  borderRadius: 999, border: '1px solid #bbf7d0',
-                }}>
-                  Select ✓
-                </span>
-              </div>
-            ))}
+              )}
+            </div>
+            <button
+              onClick={handleManualSearch}
+              disabled={searching}
+              className="btn-primary"
+              style={{ padding: '10px 18px', whiteSpace: 'nowrap' }}
+            >
+              {searching ? '⏳' : '🔍 Search'}
+            </button>
           </div>
-        )}
+
+          <div style={{
+            fontSize: 11, color: '#9ca3af',
+            fontWeight: 600, marginTop: 5,
+          }}>
+            Auto-searches after you stop typing • or press Search button
+          </div>
+
+          {searchError && !selectedPatient && (
+            <div style={{
+              marginTop: 8, fontSize: 13,
+              color: '#dc2626', fontWeight: 700,
+            }}>
+              {searchError}
+            </div>
+          )}
+
+          {/* Dropdown results */}
+          {searchResults.length > 0 && (
+            <div style={{
+              position: 'absolute', left: 0, right: 48,
+              top: '100%', zIndex: 100,
+              border: '1px solid #e5e7eb', borderRadius: 8,
+              overflow: 'hidden',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+              background: 'white', marginTop: 4,
+            }}>
+              <div style={{
+                padding: '8px 14px',
+                background: '#f0fdf4',
+                borderBottom: '1px solid #e5e7eb',
+                fontSize: 11, color: '#16a34a', fontWeight: 700,
+              }}>
+                {searchResults.length} patient{searchResults.length !== 1 ? 's' : ''} found — click to select
+              </div>
+              {searchResults.map((item) => (
+                <div
+                  key={item.patient.id}
+                  onClick={() => selectPatient(item)}
+                  style={{
+                    padding: '12px 14px',
+                    borderBottom: '1px solid #f3f4f6',
+                    cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    transition: 'background 0.15s',
+                    background: 'white',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = '#f0fdf4'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'white'}
+                >
+                  <div style={{
+                    width: 36, height: 36, borderRadius: '50%',
+                    background: '#d1fae5', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center',
+                    fontSize: 16, flexShrink: 0,
+                  }}>👤</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
+                      {item.patient.first_name} {item.patient.last_name}
+                    </div>
+                    <div style={{
+                      fontSize: 12, color: '#6b7280',
+                      fontWeight: 600, marginTop: 1,
+                    }}>
+                      @{item.patient.username}
+                      {item.patient.patient_profile?.patient_id && (
+                        <span style={{
+                          marginLeft: 8, background: '#dcfce7',
+                          color: '#166534', fontSize: 11,
+                          fontWeight: 700, padding: '1px 8px', borderRadius: 999,
+                        }}>
+                          ID: {item.patient.patient_profile.patient_id}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span style={{
+                    fontSize: 11, color: '#16a34a', fontWeight: 700,
+                    padding: '3px 10px', background: '#f0fdf4',
+                    borderRadius: 999, border: '1px solid #bbf7d0',
+                  }}>
+                    Select ✓
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Selected patient confirmation */}
         {selectedPatient && (
           <div style={{
-            marginTop: 10, padding: '10px 14px',
+            marginTop: 12, padding: '10px 14px',
             background: '#d1fae5', borderRadius: 8,
             border: '1.5px solid #16a34a',
-            display: 'flex', alignItems: 'center',
-            justifyContent: 'space-between',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ fontSize: 20 }}>✅</span>
@@ -275,14 +334,12 @@ function AddMedicalRecord() {
                 cursor: 'pointer', color: '#065f46',
                 fontSize: 18, fontWeight: 700,
               }}
-            >
-              ✕
-            </button>
+            >✕</button>
           </div>
         )}
       </div>
 
-      {/* STEP 2 — Fill record */}
+      {/* STEP 2 */}
       <div style={{
         background: '#f9fafb', borderRadius: 10,
         padding: 16, border: '1px solid #e5e7eb',
@@ -295,8 +352,7 @@ function AddMedicalRecord() {
         }}>
           <span style={{
             background: selectedPatient ? '#16a34a' : '#9ca3af',
-            color: 'white', borderRadius: '50%',
-            width: 22, height: 22,
+            color: 'white', borderRadius: '50%', width: 22, height: 22,
             display: 'inline-flex', alignItems: 'center',
             justifyContent: 'center', fontSize: 12, fontWeight: 700,
           }}>2</span>
@@ -325,18 +381,14 @@ function AddMedicalRecord() {
               onBlur={e => e.target.style.borderColor = '#e5e7eb'}
             />
           </div>
-
           <div className="form-group">
             <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
               Record Data *
             </label>
             <textarea
               style={{
-                ...inp,
-                resize: 'vertical',
-                minHeight: 140,
-                lineHeight: 1.6,
-                fontFamily: 'inherit',
+                ...inp, resize: 'vertical',
+                minHeight: 140, lineHeight: 1.6, fontFamily: 'inherit',
               }}
               placeholder={
                 'Enter medical record details here…\n\nExample:\nDiagnosis: Hypertension\nBlood Pressure: 140/90\nPrescription: Amlodipine 5mg\nNotes: Reduce salt intake.'
@@ -348,14 +400,10 @@ function AddMedicalRecord() {
               onFocus={e => e.target.style.borderColor = '#16a34a'}
               onBlur={e => e.target.style.borderColor = '#e5e7eb'}
             />
-            <div style={{
-              fontSize: 11, color: '#9ca3af',
-              marginTop: 4, fontWeight: 600,
-            }}>
+            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, fontWeight: 600 }}>
               🔒 This data will be encrypted before saving.
             </div>
           </div>
-
           <button
             type="submit"
             disabled={saving || !selectedPatient}
@@ -390,24 +438,37 @@ function SearchPatientRecords() {
   const [searched, setSearched] = useState(false)
   const [expandedPatient, setExpandedPatient] = useState(null)
 
-  const handleSearch = async (e) => {
-    e?.preventDefault()
-    if (!query.trim() || query.trim().length < 2) {
-      setError('Please enter at least 2 characters.')
+  // Debounce — 500ms
+  const debouncedQuery = useDebounce(query, 500)
+
+  useEffect(() => {
+    if (!debouncedQuery.trim() || debouncedQuery.trim().length < 2) {
+      setResults([])
+      setError('')
+      setSearched(false)
       return
     }
-    setError('')
+    doSearch(debouncedQuery.trim())
+  }, [debouncedQuery])
+
+  const doSearch = async (q) => {
     setSearching(true)
     setSearched(false)
     setResults([])
     setExpandedPatient(null)
+    setError('')
     try {
       const res = await api.get(
-        `/patients/search/?q=${encodeURIComponent(query.trim())}`
+        `/patients/search/?q=${encodeURIComponent(q)}`
       )
-      setResults(res.data.results || [])
+      const r = res.data.results || []
+      setResults(r)
       setSearched(true)
-      if (res.data.results?.length === 1) setExpandedPatient(0)
+      if (r.length === 0) {
+        setError(res.data.error || `No patient found matching "${q}".`)
+      } else if (r.length === 1) {
+        setExpandedPatient(0)
+      }
     } catch (err) {
       setError(err.response?.data?.error || 'Search failed.')
       setSearched(true)
@@ -416,26 +477,45 @@ function SearchPatientRecords() {
     }
   }
 
+  const handleManualSearch = () => {
+    if (!query.trim() || query.trim().length < 2) {
+      setError('Please enter at least 2 characters.')
+      return
+    }
+    doSearch(query.trim())
+  }
+
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <input
-          type="text"
-          placeholder="Type patient name or ID number…"
-          value={query}
-          onChange={e => { setQuery(e.target.value); setError('') }}
-          onKeyDown={e => { if (e.key === 'Enter') handleSearch() }}
-          style={{
-            flex: 1, padding: '10px 14px',
-            border: '1.5px solid #e5e7eb', borderRadius: 8,
-            fontSize: 14, color: '#000', fontWeight: 'bold',
-            background: 'white', outline: 'none',
-          }}
-          onFocus={e => e.target.style.borderColor = '#16a34a'}
-          onBlur={e => e.target.style.borderColor = '#e5e7eb'}
-        />
+      <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+        <div style={{ flex: 1, position: 'relative' }}>
+          <input
+            type="text"
+            placeholder="Type patient name or ID number…"
+            value={query}
+            onChange={e => { setQuery(e.target.value); setError('') }}
+            onKeyDown={e => { if (e.key === 'Enter') handleManualSearch() }}
+            style={{
+              width: '100%', padding: '10px 14px',
+              border: '1.5px solid #e5e7eb', borderRadius: 8,
+              fontSize: 14, color: '#000', fontWeight: 'bold',
+              background: 'white', outline: 'none',
+            }}
+            onFocus={e => e.target.style.borderColor = '#16a34a'}
+            onBlur={e => e.target.style.borderColor = '#e5e7eb'}
+          />
+          {searching && (
+            <div style={{
+              position: 'absolute', right: 12, top: '50%',
+              transform: 'translateY(-50%)',
+              fontSize: 12, color: '#9ca3af', fontWeight: 600,
+            }}>
+              Searching…
+            </div>
+          )}
+        </div>
         <button
-          onClick={handleSearch}
+          onClick={handleManualSearch}
           disabled={searching}
           className="btn-primary"
           style={{ padding: '10px 18px', whiteSpace: 'nowrap' }}
@@ -444,21 +524,25 @@ function SearchPatientRecords() {
         </button>
       </div>
 
-      <p style={{
-        fontSize: 12, color: '#9ca3af',
-        fontWeight: 600, marginBottom: 12,
-      }}>
-        Search by first name, last name, username, or patient ID number
+      <p style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, marginBottom: 12 }}>
+        Auto-searches after you stop typing • Search by name, username, or patient ID
       </p>
 
-      {error && <div className="alert-error">{error}</div>}
+      {error && (
+        <div style={{
+          padding: '10px 14px', background: '#fef2f2',
+          border: '1px solid #fecaca', borderRadius: 8,
+          color: '#dc2626', fontSize: 13, fontWeight: 700, marginBottom: 12,
+        }}>
+          {error}
+        </div>
+      )}
 
       {searched && results.length === 0 && !error && (
         <div style={{
-          textAlign: 'center', padding: 24,
-          color: '#9ca3af', fontSize: 13, fontWeight: 600,
-          background: '#f9fafb', borderRadius: 8,
-          border: '1px solid #e5e7eb',
+          textAlign: 'center', padding: 24, color: '#9ca3af',
+          fontSize: 13, fontWeight: 600, background: '#f9fafb',
+          borderRadius: 8, border: '1px solid #e5e7eb',
         }}>
           No patient found matching <strong>"{query}"</strong>
         </div>
@@ -472,13 +556,11 @@ function SearchPatientRecords() {
           <div
             onClick={() => setExpandedPatient(expandedPatient === idx ? null : idx)}
             style={{
-              padding: '14px 16px',
+              padding: '14px 16px', cursor: 'pointer',
               background: expandedPatient === idx ? '#f0fdf4' : 'white',
-              cursor: 'pointer',
-              display: 'flex', justifyContent: 'space-between',
-              alignItems: 'center',
-              borderBottom: expandedPatient === idx
-                ? '1px solid #e5e7eb' : 'none',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              borderBottom: expandedPatient === idx ? '1px solid #e5e7eb' : 'none',
+              transition: 'background 0.15s',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -491,15 +573,13 @@ function SearchPatientRecords() {
                 <div style={{ fontWeight: 700, fontSize: 15, color: '#000' }}>
                   {item.patient.first_name} {item.patient.last_name}
                 </div>
-                <div style={{
-                  fontSize: 12, color: '#6b7280', fontWeight: 600,
-                }}>
+                <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>
                   @{item.patient.username}
                   {item.patient.patient_profile?.patient_id && (
                     <span style={{
                       marginLeft: 8, background: '#dcfce7',
-                      color: '#166534', fontSize: 11, fontWeight: 700,
-                      padding: '1px 8px', borderRadius: 999,
+                      color: '#166534', fontSize: 11,
+                      fontWeight: 700, padding: '1px 8px', borderRadius: 999,
                     }}>
                       ID: {item.patient.patient_profile.patient_id}
                     </span>
@@ -507,14 +587,11 @@ function SearchPatientRecords() {
                 </div>
               </div>
             </div>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-            }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{
                 background: '#f0fdf4', color: '#16a34a',
-                fontSize: 12, fontWeight: 700,
-                padding: '3px 10px', borderRadius: 999,
-                border: '1px solid #bbf7d0',
+                fontSize: 12, fontWeight: 700, padding: '3px 10px',
+                borderRadius: 999, border: '1px solid #bbf7d0',
               }}>
                 {item.total_records} record{item.total_records !== 1 ? 's' : ''}
               </span>
@@ -526,8 +603,6 @@ function SearchPatientRecords() {
 
           {expandedPatient === idx && (
             <div style={{ padding: 16, background: 'white' }}>
-
-              {/* Patient info grid */}
               <div style={{
                 display: 'grid',
                 gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
@@ -548,30 +623,24 @@ function SearchPatientRecords() {
                   <div key={label}>
                     <div style={{
                       fontSize: 10, color: '#9ca3af',
-                      fontWeight: 700, textTransform: 'uppercase',
-                      marginBottom: 2,
+                      fontWeight: 700, textTransform: 'uppercase', marginBottom: 2,
                     }}>{label}</div>
-                    <div style={{
-                      fontSize: 13, color: '#000', fontWeight: 'bold',
-                    }}>{val}</div>
+                    <div style={{ fontSize: 13, color: '#000', fontWeight: 'bold' }}>
+                      {val}
+                    </div>
                   </div>
                 ))}
               </div>
 
-              {/* Records list */}
-              <div style={{
-                fontWeight: 700, fontSize: 14,
-                color: '#111827', marginBottom: 10,
-              }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: '#111827', marginBottom: 10 }}>
                 📋 Medical Records ({item.total_records})
               </div>
 
               {item.medical_records.length === 0 ? (
                 <div style={{
-                  textAlign: 'center', padding: 16,
-                  color: '#9ca3af', fontSize: 13, fontWeight: 600,
-                  background: '#f9fafb', borderRadius: 8,
-                  border: '1px dashed #e5e7eb',
+                  textAlign: 'center', padding: 16, color: '#9ca3af',
+                  fontSize: 13, fontWeight: 600, background: '#f9fafb',
+                  borderRadius: 8, border: '1px dashed #e5e7eb',
                 }}>
                   No medical records yet.
                 </div>
@@ -585,14 +654,10 @@ function SearchPatientRecords() {
                       display: 'flex', justifyContent: 'space-between',
                       alignItems: 'center', marginBottom: 8,
                     }}>
-                      <span style={{
-                        fontWeight: 700, fontSize: 14, color: '#000',
-                      }}>
+                      <span style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
                         📄 {r.record_title}
                       </span>
-                      <span style={{
-                        fontSize: 11, color: '#9ca3af', fontWeight: 600,
-                      }}>
+                      <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600 }}>
                         {new Date(r.created_at).toLocaleDateString()}
                       </span>
                     </div>
@@ -605,8 +670,7 @@ function SearchPatientRecords() {
                       {r.data}
                     </div>
                     <div style={{
-                      fontSize: 11, color: '#9ca3af',
-                      marginTop: 8, fontWeight: 600,
+                      fontSize: 11, color: '#9ca3af', marginTop: 8, fontWeight: 600,
                     }}>
                       Added by: {r.created_by_name}
                     </div>
@@ -647,6 +711,10 @@ export default function AdminDashboard() {
   const [resetError, setResetError] = useState('')
   const [resetLoading, setResetLoading] = useState(false)
 
+  // Debounced values for users and appointments
+  const debouncedUserSearch = useDebounce(userSearch, 400)
+  const debouncedApptSearch = useDebounce(apptSearch, 400)
+
   const handleWsNotif = useCallback((data) => {
     if (data.type === 'initial_notifications') setNotifications(data.notifications || [])
     else if (data.message) setNotifications(prev => [data, ...prev])
@@ -656,43 +724,48 @@ export default function AdminDashboard() {
   const loadNotifications = useCallback(async () => {
     try { const r = await api.get('/notifications/'); setNotifications(r.data) } catch (_) {}
   }, [])
+
   const loadStats = useCallback(async () => {
     try { const r = await api.get('/appointments/stats/overview/'); setStats(r.data) } catch (_) {}
   }, [])
+
   const loadUsers = useCallback(async () => {
     try {
       const params = new URLSearchParams()
-      if (userSearch) params.append('search', userSearch)
+      if (debouncedUserSearch) params.append('search', debouncedUserSearch)
       if (userRoleFilter) params.append('role', userRoleFilter)
       const r = await api.get(`/users/?${params}`)
       setUsers(r.data)
     } catch (_) {}
-  }, [userSearch, userRoleFilter])
+  }, [debouncedUserSearch, userRoleFilter])
+
   const loadAppointments = useCallback(async () => {
     try {
       const params = new URLSearchParams()
-      if (apptSearch) params.append('search', apptSearch)
+      if (debouncedApptSearch) params.append('search', debouncedApptSearch)
       if (apptStatusFilter) params.append('status', apptStatusFilter)
       const r = await api.get(`/appointments/?${params}`)
       setAppointments(r.data)
     } catch (_) {}
-  }, [apptSearch, apptStatusFilter])
+  }, [debouncedApptSearch, apptStatusFilter])
 
   useEffect(() => {
     loadNotifications(); loadStats(); loadAppointments()
   }, [])
+
   useEffect(() => {
     if (tab === 'Users') loadUsers()
-  }, [tab, userSearch, userRoleFilter])
+  }, [tab, debouncedUserSearch, userRoleFilter])
+
   useEffect(() => {
     if (tab === 'Appointments' || tab === 'Overview') loadAppointments()
-  }, [tab, apptSearch, apptStatusFilter])
+  }, [tab, debouncedApptSearch, apptStatusFilter])
 
   const confirmCancel = async () => {
     if (!cancelTarget) return
     try {
       await api.post(`/appointments/${cancelTarget}/cancel/`)
-      setActionMsg('Appointment cancelled. Both patient and doctor have been notified.')
+      setActionMsg('Appointment cancelled. Both patient and doctor notified.')
       loadAppointments(); loadStats()
     } catch (_) {}
     setCancelTarget(null)
@@ -702,7 +775,7 @@ export default function AdminDashboard() {
     if (!confirmTarget) return
     try {
       await api.post(`/appointments/${confirmTarget}/confirm/`)
-      setActionMsg('Appointment confirmed. Patient has been notified.')
+      setActionMsg('Appointment confirmed. Patient notified.')
       loadAppointments(); loadStats()
     } catch (err) {
       setActionMsg(err.response?.data?.error || 'Failed to confirm.')
@@ -716,7 +789,7 @@ export default function AdminDashboard() {
       setActionMsg(`Status updated to "${newStatus}".`)
       loadAppointments(); loadStats()
     } catch (err) {
-      setActionMsg(err.response?.data?.error || 'Failed to update status.')
+      setActionMsg(err.response?.data?.error || 'Failed.')
     }
   }
 
@@ -744,7 +817,7 @@ export default function AdminDashboard() {
       })
       setResetMsg(res.data.message); setNewPassword('')
     } catch (err) {
-      setResetError(err.response?.data?.error || 'Failed to reset password.')
+      setResetError(err.response?.data?.error || 'Failed.')
     } finally { setResetLoading(false) }
   }
 
@@ -753,11 +826,11 @@ export default function AdminDashboard() {
   }
 
   const statusBadge = (s) => {
-    const colors = {
+    const map = {
       pending: 'badge-pending', confirmed: 'badge-confirmed',
       cancelled: 'badge-cancelled', completed: 'badge-completed',
     }
-    return <span className={`badge ${colors[s] || 'badge-pending'}`}>{s}</span>
+    return <span className={`badge ${map[s] || 'badge-pending'}`}>{s}</span>
   }
 
   const bold = { color: '#000', fontWeight: 'bold' }
@@ -914,18 +987,25 @@ export default function AdminDashboard() {
           <div className="card">
             <div className="card-title">👥 Manage Users</div>
             <div className="search-bar">
-              <input type="text" placeholder="Search users…"
-                value={userSearch} style={bold}
-                onChange={e => setUserSearch(e.target.value)} />
-              <select value={userRoleFilter}
-                style={{ ...bold, maxWidth: 160 }}
+              <div style={{ position: 'relative', flex: 1, maxWidth: 280 }}>
+                <input type="text" placeholder="Search users…"
+                  value={userSearch} style={{ ...bold, width: '100%' }}
+                  onChange={e => setUserSearch(e.target.value)} />
+                {userSearch && userSearch !== debouncedUserSearch && (
+                  <span style={{
+                    position: 'absolute', right: 10, top: '50%',
+                    transform: 'translateY(-50%)',
+                    fontSize: 11, color: '#9ca3af', fontWeight: 600,
+                  }}>typing…</span>
+                )}
+              </div>
+              <select value={userRoleFilter} style={{ ...bold, maxWidth: 160 }}
                 onChange={e => setUserRoleFilter(e.target.value)}>
                 <option value="">All Roles</option>
                 <option value="patient">Patients</option>
                 <option value="doctor">Doctors</option>
                 <option value="admin">Admins</option>
               </select>
-              <button className="btn-primary" onClick={loadUsers}>Search</button>
             </div>
             <div style={{
               display: 'grid',
@@ -998,7 +1078,6 @@ export default function AdminDashboard() {
                   </tbody>
                 </table>
               </div>
-
               {selectedUser && (
                 <div style={{
                   border: '1px solid #e5e7eb', borderRadius: 10,
@@ -1047,11 +1126,19 @@ export default function AdminDashboard() {
           <div className="card">
             <div className="card-title">📅 All Appointments</div>
             <div className="search-bar">
-              <input type="text" placeholder="Search by patient or doctor…"
-                value={apptSearch} style={bold}
-                onChange={e => setApptSearch(e.target.value)} />
-              <select value={apptStatusFilter}
-                style={{ ...bold, maxWidth: 160 }}
+              <div style={{ position: 'relative', flex: 1, maxWidth: 280 }}>
+                <input type="text" placeholder="Search by patient or doctor…"
+                  value={apptSearch} style={{ ...bold, width: '100%' }}
+                  onChange={e => setApptSearch(e.target.value)} />
+                {apptSearch && apptSearch !== debouncedApptSearch && (
+                  <span style={{
+                    position: 'absolute', right: 10, top: '50%',
+                    transform: 'translateY(-50%)',
+                    fontSize: 11, color: '#9ca3af', fontWeight: 600,
+                  }}>typing…</span>
+                )}
+              </div>
+              <select value={apptStatusFilter} style={{ ...bold, maxWidth: 160 }}
                 onChange={e => setApptStatusFilter(e.target.value)}>
                 <option value="">All Statuses</option>
                 <option value="pending">Pending</option>
@@ -1059,7 +1146,6 @@ export default function AdminDashboard() {
                 <option value="cancelled">Cancelled</option>
                 <option value="completed">Completed</option>
               </select>
-              <button className="btn-primary" onClick={loadAppointments}>Search</button>
             </div>
             <div className="table-wrap">
               <table>
@@ -1096,11 +1182,7 @@ export default function AdminDashboard() {
 
         {/* RECORDS */}
         {tab === 'Records' && (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: 20,
-          }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             <div className="card">
               <div className="card-title">🔍 Search Patient Records</div>
               <SearchPatientRecords />
@@ -1138,7 +1220,6 @@ export default function AdminDashboard() {
           message={`Deactivate "${deactivateTarget.username}"? They cannot log in.`}
           onConfirm={confirmDeactivate} onCancel={() => setDeactivateTarget(null)} />
       )}
-
       {resetUserId && (
         <div className="modal-overlay">
           <div className="modal">
@@ -1161,9 +1242,7 @@ export default function AdminDashboard() {
                     setResetUserId(null)
                     setResetMsg('')
                     setResetError('')
-                  }}>
-                  Close
-                </button>
+                  }}>Close</button>
                 <button type="submit" className="btn-primary" disabled={resetLoading}>
                   {resetLoading ? 'Resetting…' : 'Reset Password'}
                 </button>
