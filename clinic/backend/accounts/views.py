@@ -160,13 +160,15 @@ class UserDetailView(generics.RetrieveAPIView):
 
 class SearchPatientView(APIView):
     """
-    Admin searches patients by name, username, email, or patient ID.
-    Fixed: handles patients with no profile gracefully.
+    Search patients by name, username, email, or patient ID.
+    Fixed: works for ALL patients including those without a profile.
+    Works for both admin and doctor roles.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if request.user.role != 'admin':
+        # Allow both admin and doctor to search patients
+        if request.user.role not in ('admin', 'doctor'):
             return Response({'error': 'Unauthorized.'}, status=403)
 
         query = request.query_params.get('q', '').strip()
@@ -184,48 +186,50 @@ class SearchPatientView(APIView):
             )
 
         try:
-            # Build search query safely
-            # Search by name, username, email first
-            name_query = Q(first_name__icontains=query) | \
-                         Q(last_name__icontains=query) | \
-                         Q(username__icontains=query) | \
-                         Q(email__icontains=query)
-
-            # Also search by patient_id but only if patient has a profile
-            # Use try/except per patient to avoid crashing
+            # Step 1: Search all patients by name/username/email
+            # This works even if the patient has NO profile
             patients = CustomUser.objects.filter(
                 role='patient'
-            ).filter(name_query).distinct().select_related('patient_profile')
+            ).filter(
+                Q(first_name__icontains=query) |
+                Q(last_name__icontains=query) |
+                Q(username__icontains=query) |
+                Q(email__icontains=query)
+            ).distinct()
 
-            # If no results by name, try patient_id number search
-            if not patients.exists() and query.isdigit():
-                patients = CustomUser.objects.filter(
-                    role='patient',
-                    patient_profile__patient_id=query
-                ).select_related('patient_profile')
-
-            # If still no results, try partial patient_id search
+            # Step 2: Also search by patient_id number
+            # Only patients who HAVE a profile with patient_id
             if not patients.exists():
                 try:
-                    patients = CustomUser.objects.filter(
+                    patients_by_id = CustomUser.objects.filter(
                         role='patient',
                         patient_profile__patient_id__icontains=query
-                    ).select_related('patient_profile')
+                    ).distinct()
+                    patients = patients_by_id
                 except Exception:
                     pass
 
+            # Step 3: If still nothing — try full name combined
             if not patients.exists():
-                return Response(
-                    {
-                        'results': [],
-                        'total_patients_found': 0,
-                        'query': query,
-                        'error': f'No patient found matching "{query}".'
-                    },
-                    status=status.HTTP_200_OK,
-                )
+                # Split the query into words and search each word
+                words = query.split()
+                if len(words) >= 2:
+                    q_combined = Q()
+                    for word in words:
+                        q_combined |= Q(first_name__icontains=word)
+                        q_combined |= Q(last_name__icontains=word)
+                    patients = CustomUser.objects.filter(
+                        role='patient'
+                    ).filter(q_combined).distinct()
 
-            # Build results with medical records
+            if not patients.exists():
+                return Response({
+                    'results': [],
+                    'total_patients_found': 0,
+                    'query': query,
+                })
+
+            # Build results
             from records.models import MedicalRecord
             from records.serializers import MedicalRecordSerializer
 
@@ -250,16 +254,13 @@ class SearchPatientView(APIView):
             })
 
         except Exception as e:
-            # Never crash — always return a clean error
-            return Response(
-                {
-                    'results': [],
-                    'total_patients_found': 0,
-                    'query': query,
-                    'error': f'Search error: {str(e)}',
-                },
-                status=status.HTTP_200_OK,
-            )
+            # Never crash — always return clean response
+            return Response({
+                'results': [],
+                'total_patients_found': 0,
+                'query': query,
+                'search_error': str(e),
+            }, status=status.HTTP_200_OK)
 
 
 class SoftDeleteUserView(APIView):

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -18,30 +18,31 @@ function useDebounce(value, delay) {
   return debounced
 }
 
-// ── Add Medical Record by Patient Name ──
-function AddMedicalRecord() {
-  const [nameQuery, setNameQuery] = useState('')
-  const [searchResults, setSearchResults] = useState([])
+// ── Admin Records — Search Only (Read-Only) ──
+function AdminRecordsTab() {
+  const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
+  const [searchResults, setSearchResults] = useState([])
   const [searchError, setSearchError] = useState('')
+  const [hasSearched, setHasSearched] = useState(false)
   const [selectedPatient, setSelectedPatient] = useState(null)
-  const [recordTitle, setRecordTitle] = useState('')
-  const [recordData, setRecordData] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [saveSuccess, setSaveSuccess] = useState('')
-  const [saveError, setSaveError] = useState('')
+  const [records, setRecords] = useState([])
+  const [loadingRecords, setLoadingRecords] = useState(false)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [totalRecords, setTotalRecords] = useState(0)
 
-  // Debounce the name query — 500ms delay
-  const debouncedQuery = useDebounce(nameQuery, 500)
+  const debouncedQuery = useDebounce(query, 500)
 
-  // Auto-search when debounced query changes
+  // Auto search when debounced query changes
   useEffect(() => {
     if (!debouncedQuery.trim() || debouncedQuery.trim().length < 2) {
       setSearchResults([])
       setSearchError('')
+      setHasSearched(false)
       return
     }
-    if (selectedPatient) return // Don't search again after selecting
+    if (selectedPatient) return
     doSearch(debouncedQuery.trim())
   }, [debouncedQuery])
 
@@ -49,20 +50,24 @@ function AddMedicalRecord() {
     setSearching(true)
     setSearchResults([])
     setSearchError('')
+    setHasSearched(false)
     try {
       const res = await api.get(
         `/patients/search/?q=${encodeURIComponent(q)}`
       )
       const results = res.data.results || []
       setSearchResults(results)
+      setHasSearched(true)
       if (results.length === 0) {
         setSearchError(
-          res.data.error || `No patient found matching "${q}".`
+          `No patient found matching "${q}". Make sure the name is spelled correctly.`
         )
       }
     } catch (err) {
+      setHasSearched(true)
       setSearchError(
-        err.response?.data?.error || 'Search failed. Please try again.'
+        err.response?.data?.error ||
+        'Search failed. Please check your connection and try again.'
       )
     } finally {
       setSearching(false)
@@ -70,229 +75,237 @@ function AddMedicalRecord() {
   }
 
   const handleManualSearch = () => {
-    if (!nameQuery.trim() || nameQuery.trim().length < 2) {
+    const q = query.trim()
+    if (!q || q.length < 2) {
       setSearchError('Please type at least 2 characters.')
       return
     }
-    doSearch(nameQuery.trim())
+    setSelectedPatient(null)
+    setRecords([])
+    doSearch(q)
   }
 
-  const selectPatient = (item) => {
+  const selectPatient = async (item) => {
     setSelectedPatient(item.patient)
     setSearchResults([])
-    setNameQuery(
+    setQuery(
       item.patient.first_name
         ? `${item.patient.first_name} ${item.patient.last_name}`.trim()
         : item.patient.username
     )
-    setSaveSuccess('')
-    setSaveError('')
     setSearchError('')
+    setCurrentPage(1)
+    loadPatientRecords(item.patient.id, 1)
   }
 
-  const handleSave = async (e) => {
-    e.preventDefault()
-    if (!selectedPatient) {
-      setSaveError('Please search and select a patient first.')
-      return
-    }
-    setSaving(true)
-    setSaveSuccess('')
-    setSaveError('')
+  const loadPatientRecords = async (patientUserId, page = 1) => {
+    setLoadingRecords(true)
+    setRecords([])
     try {
-      await api.post('/records/create/', {
-        patient: selectedPatient.id,
-        record_title: recordTitle.trim(),
-        data: recordData.trim(),
-      })
-      const patientName = selectedPatient.first_name
-        ? `${selectedPatient.first_name} ${selectedPatient.last_name}`.trim()
-        : selectedPatient.username
-      setSaveSuccess(
-        `✅ Record saved for ${patientName}. They can now view it in their dashboard.`
+      const res = await api.get(
+        `/records/?patient_user_id=${patientUserId}&page=${page}`
       )
-      setRecordTitle('')
-      setRecordData('')
-      setSelectedPatient(null)
-      setNameQuery('')
-    } catch (err) {
-      const d = err.response?.data
-      setSaveError(
-        typeof d === 'object'
-          ? Object.values(d).flat().join(' ')
-          : 'Failed to save. Please try again.'
-      )
+      setRecords(res.data.results || [])
+      setTotalPages(res.data.total_pages || 1)
+      setTotalRecords(res.data.count || 0)
+      setCurrentPage(page)
+    } catch (_) {
+      setRecords([])
     } finally {
-      setSaving(false)
+      setLoadingRecords(false)
     }
   }
 
-  const inp = {
-    width: '100%', padding: '10px 14px',
-    border: '1.5px solid #e5e7eb', borderRadius: 8,
-    fontSize: 14, color: '#000', fontWeight: 'bold', background: 'white',
+  const clearSelection = () => {
+    setSelectedPatient(null)
+    setQuery('')
+    setRecords([])
+    setSearchResults([])
+    setSearchError('')
+    setHasSearched(false)
   }
 
   return (
     <div>
-      {saveSuccess && (
-        <div className="alert-success" style={{ marginBottom: 16 }}>
-          {saveSuccess}
-          <button
-            onClick={() => setSaveSuccess('')}
-            style={{
-              float: 'right', background: 'none',
-              border: 'none', cursor: 'pointer',
-              fontWeight: 700, color: '#065f46',
-            }}>✕</button>
-        </div>
-      )}
-      {saveError && (
-        <div className="alert-error" style={{ marginBottom: 16 }}>
-          {saveError}
-        </div>
-      )}
-
-      {/* STEP 1 */}
+      {/* Admin read-only notice */}
       <div style={{
-        background: '#f9fafb', borderRadius: 10,
-        padding: 16, marginBottom: 20,
-        border: '1px solid #e5e7eb',
+        background: '#fef3c7',
+        border: '1px solid #fcd34d',
+        borderRadius: 8,
+        padding: '10px 16px',
+        marginBottom: 20,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        fontSize: 13,
+        fontWeight: 700,
+        color: '#92400e',
       }}>
-        <div style={{
-          fontWeight: 700, fontSize: 13, color: '#14532d',
-          marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6,
-        }}>
-          <span style={{
-            background: '#16a34a', color: 'white', borderRadius: '50%',
-            width: 22, height: 22, display: 'inline-flex',
-            alignItems: 'center', justifyContent: 'center',
-            fontSize: 12, fontWeight: 700,
-          }}>1</span>
-          Search Patient by Name
-        </div>
+        <span style={{ fontSize: 16 }}>🛡️</span>
+        Admin View — Read Only. Search a patient by name to view their records.
+      </div>
+
+      {/* Search section */}
+      <div className="card">
+        <div className="card-title">🔍 Search Patient Records</div>
 
         <div style={{ position: 'relative' }}>
           <div style={{ display: 'flex', gap: 8 }}>
             <div style={{ flex: 1, position: 'relative' }}>
               <input
-                style={inp}
                 type="text"
                 placeholder="Type patient name e.g. Jane, Juan Dela Cruz…"
-                value={nameQuery}
+                value={query}
                 onChange={e => {
-                  setNameQuery(e.target.value)
+                  setQuery(e.target.value)
                   setSearchError('')
-                  if (selectedPatient) setSelectedPatient(null)
+                  if (selectedPatient) {
+                    setSelectedPatient(null)
+                    setRecords([])
+                  }
                 }}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') handleManualSearch()
+                onKeyDown={e => { if (e.key === 'Enter') handleManualSearch() }}
+                style={{
+                  width: '100%', padding: '11px 14px',
+                  border: '1.5px solid #e5e7eb', borderRadius: 8,
+                  fontSize: 14, color: '#000', fontWeight: 'bold',
+                  background: 'white', outline: 'none',
+                  transition: 'border-color 0.2s',
                 }}
                 onFocus={e => e.target.style.borderColor = '#16a34a'}
                 onBlur={e => e.target.style.borderColor = '#e5e7eb'}
               />
+              {/* Indicators */}
               {searching && (
-                <div style={{
+                <span style={{
                   position: 'absolute', right: 12, top: '50%',
                   transform: 'translateY(-50%)',
                   fontSize: 12, color: '#9ca3af', fontWeight: 600,
                 }}>
                   Searching…
-                </div>
+                </span>
+              )}
+              {query && query !== debouncedQuery && !searching && (
+                <span style={{
+                  position: 'absolute', right: 12, top: '50%',
+                  transform: 'translateY(-50%)',
+                  fontSize: 11, color: '#9ca3af', fontWeight: 600,
+                }}>
+                  typing…
+                </span>
               )}
             </div>
             <button
               onClick={handleManualSearch}
               disabled={searching}
               className="btn-primary"
-              style={{ padding: '10px 18px', whiteSpace: 'nowrap' }}
+              style={{ padding: '10px 20px', whiteSpace: 'nowrap' }}
             >
               {searching ? '⏳' : '🔍 Search'}
             </button>
           </div>
 
-          <div style={{
-            fontSize: 11, color: '#9ca3af',
-            fontWeight: 600, marginTop: 5,
+          <p style={{
+            fontSize: 11, color: '#9ca3af', fontWeight: 600, marginTop: 6,
           }}>
-            Auto-searches after you stop typing • or press Search button
-          </div>
+            Auto-searches after you stop typing (500ms) •
+            Search by first name, last name, username, or patient ID
+          </p>
 
+          {/* Error message */}
           {searchError && !selectedPatient && (
             <div style={{
-              marginTop: 8, fontSize: 13,
-              color: '#dc2626', fontWeight: 700,
+              marginTop: 10, padding: '10px 14px',
+              background: '#fef2f2', border: '1px solid #fecaca',
+              borderRadius: 8, fontSize: 13, color: '#dc2626', fontWeight: 700,
             }}>
-              {searchError}
+              ⚠️ {searchError}
             </div>
           )}
 
-          {/* Dropdown results */}
-          {searchResults.length > 0 && (
+          {/* Search results dropdown */}
+          {searchResults.length > 0 && !selectedPatient && (
             <div style={{
-              position: 'absolute', left: 0, right: 48,
-              top: '100%', zIndex: 100,
-              border: '1px solid #e5e7eb', borderRadius: 8,
+              position: 'absolute', left: 0, right: 100,
+              top: 52, zIndex: 200,
+              border: '1px solid #e5e7eb', borderRadius: 10,
               overflow: 'hidden',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
-              background: 'white', marginTop: 4,
+              boxShadow: '0 8px 28px rgba(0,0,0,0.12)',
+              background: 'white',
             }}>
+              {/* Results header */}
               <div style={{
                 padding: '8px 14px',
                 background: '#f0fdf4',
                 borderBottom: '1px solid #e5e7eb',
                 fontSize: 11, color: '#16a34a', fontWeight: 700,
               }}>
-                {searchResults.length} patient{searchResults.length !== 1 ? 's' : ''} found — click to select
+                {searchResults.length} patient{searchResults.length !== 1 ? 's' : ''} found
+                — click a name to view their records
               </div>
-              {searchResults.map((item) => (
+
+              {searchResults.map(item => (
                 <div
                   key={item.patient.id}
                   onClick={() => selectPatient(item)}
                   style={{
-                    padding: '12px 14px',
+                    padding: '13px 16px',
                     borderBottom: '1px solid #f3f4f6',
                     cursor: 'pointer',
                     display: 'flex', alignItems: 'center', gap: 12,
-                    transition: 'background 0.15s',
-                    background: 'white',
+                    background: 'white', transition: 'background 0.15s',
                   }}
                   onMouseEnter={e => e.currentTarget.style.background = '#f0fdf4'}
                   onMouseLeave={e => e.currentTarget.style.background = 'white'}
                 >
+                  {/* Avatar */}
                   <div style={{
-                    width: 36, height: 36, borderRadius: '50%',
-                    background: '#d1fae5', display: 'flex',
-                    alignItems: 'center', justifyContent: 'center',
-                    fontSize: 16, flexShrink: 0,
+                    width: 42, height: 42, borderRadius: '50%',
+                    background: '#d1fae5',
+                    display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', fontSize: 20, flexShrink: 0,
                   }}>👤</div>
+
+                  {/* Info */}
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
                       {item.patient.first_name} {item.patient.last_name}
                     </div>
                     <div style={{
-                      fontSize: 12, color: '#6b7280',
-                      fontWeight: 600, marginTop: 1,
+                      fontSize: 12, color: '#6b7280', fontWeight: 600, marginTop: 2,
                     }}>
                       @{item.patient.username}
+                      {item.patient.email && (
+                        <span style={{ marginLeft: 8 }}>• {item.patient.email}</span>
+                      )}
                       {item.patient.patient_profile?.patient_id && (
                         <span style={{
-                          marginLeft: 8, background: '#dcfce7',
-                          color: '#166534', fontSize: 11,
-                          fontWeight: 700, padding: '1px 8px', borderRadius: 999,
+                          marginLeft: 8, background: '#dcfce7', color: '#166534',
+                          fontSize: 11, fontWeight: 700,
+                          padding: '1px 8px', borderRadius: 999,
                         }}>
                           ID: {item.patient.patient_profile.patient_id}
                         </span>
                       )}
                     </div>
                   </div>
-                  <span style={{
-                    fontSize: 11, color: '#16a34a', fontWeight: 700,
-                    padding: '3px 10px', background: '#f0fdf4',
-                    borderRadius: 999, border: '1px solid #bbf7d0',
-                  }}>
-                    Select ✓
-                  </span>
+
+                  {/* Record count + select */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                    <span style={{
+                      background: '#f0fdf4', color: '#16a34a',
+                      fontSize: 11, fontWeight: 700,
+                      padding: '2px 10px', borderRadius: 999,
+                      border: '1px solid #bbf7d0',
+                    }}>
+                      {item.total_records} record{item.total_records !== 1 ? 's' : ''}
+                    </span>
+                    <span style={{
+                      fontSize: 11, color: '#16a34a', fontWeight: 700,
+                    }}>
+                      View Records →
+                    </span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -302,385 +315,277 @@ function AddMedicalRecord() {
         {/* Selected patient confirmation */}
         {selectedPatient && (
           <div style={{
-            marginTop: 12, padding: '10px 14px',
-            background: '#d1fae5', borderRadius: 8,
+            marginTop: 14, padding: '12px 16px',
+            background: '#d1fae5', borderRadius: 10,
             border: '1.5px solid #16a34a',
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: 20 }}>✅</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{
+                width: 44, height: 44, borderRadius: '50%',
+                background: '#16a34a',
+                display: 'flex', alignItems: 'center',
+                justifyContent: 'center', fontSize: 20,
+              }}>👤</div>
               <div>
-                <div style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
+                <div style={{ fontWeight: 700, fontSize: 15, color: '#000' }}>
                   {selectedPatient.first_name} {selectedPatient.last_name}
                 </div>
                 <div style={{ fontSize: 12, color: '#065f46', fontWeight: 600 }}>
                   @{selectedPatient.username}
                   {selectedPatient.patient_profile?.patient_id && (
-                    <span style={{ marginLeft: 6 }}>
+                    <span style={{ marginLeft: 8 }}>
                       • Patient ID: {selectedPatient.patient_profile.patient_id}
                     </span>
+                  )}
+                  {selectedPatient.email && (
+                    <span style={{ marginLeft: 8 }}>• {selectedPatient.email}</span>
                   )}
                 </div>
               </div>
             </div>
             <button
-              onClick={() => {
-                setSelectedPatient(null)
-                setNameQuery('')
-                setSaveError('')
-              }}
+              onClick={clearSelection}
               style={{
-                background: 'none', border: 'none',
+                background: 'rgba(0,0,0,0.08)', border: 'none',
+                borderRadius: 8, padding: '6px 12px',
                 cursor: 'pointer', color: '#065f46',
-                fontSize: 18, fontWeight: 700,
+                fontWeight: 700, fontSize: 13,
               }}
-            >✕</button>
+            >
+              ✕ Clear
+            </button>
           </div>
         )}
       </div>
 
-      {/* STEP 2 */}
-      <div style={{
-        background: '#f9fafb', borderRadius: 10,
-        padding: 16, border: '1px solid #e5e7eb',
-        opacity: selectedPatient ? 1 : 0.5,
-        transition: 'opacity 0.2s',
-      }}>
+      {/* Default empty state — no patient selected yet */}
+      {!selectedPatient && !hasSearched && (
         <div style={{
-          fontWeight: 700, fontSize: 13, color: '#14532d',
-          marginBottom: 14, display: 'flex', alignItems: 'center', gap: 6,
+          textAlign: 'center', padding: '40px 20px',
+          color: '#9ca3af', fontSize: 14, fontWeight: 600,
+          background: 'white', borderRadius: 10,
+          border: '1px solid #e5e7eb', marginTop: 16,
         }}>
-          <span style={{
-            background: selectedPatient ? '#16a34a' : '#9ca3af',
-            color: 'white', borderRadius: '50%', width: 22, height: 22,
-            display: 'inline-flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 12, fontWeight: 700,
-          }}>2</span>
-          Fill Medical Record Details
-          {!selectedPatient && (
-            <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600 }}>
-              — select a patient first
-            </span>
-          )}
+          <div style={{ fontSize: 48, marginBottom: 12 }}>🔍</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#374151', marginBottom: 6 }}>
+            Search for a patient to view their records
+          </div>
+          <div style={{ fontSize: 13 }}>
+            Type a patient name in the search box above.
+            <br />Records will appear here after you select a patient.
+          </div>
         </div>
+      )}
 
-        <form onSubmit={handleSave}>
-          <div className="form-group">
-            <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
-              Record Title *
-            </label>
-            <input
-              style={inp}
-              type="text"
-              placeholder="e.g. Blood Test Results, Diagnosis, Checkup Notes"
-              value={recordTitle}
-              required
-              disabled={!selectedPatient}
-              onChange={e => setRecordTitle(e.target.value)}
-              onFocus={e => e.target.style.borderColor = '#16a34a'}
-              onBlur={e => e.target.style.borderColor = '#e5e7eb'}
-            />
-          </div>
-          <div className="form-group">
-            <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
-              Record Data *
-            </label>
-            <textarea
-              style={{
-                ...inp, resize: 'vertical',
-                minHeight: 140, lineHeight: 1.6, fontFamily: 'inherit',
-              }}
-              placeholder={
-                'Enter medical record details here…\n\nExample:\nDiagnosis: Hypertension\nBlood Pressure: 140/90\nPrescription: Amlodipine 5mg\nNotes: Reduce salt intake.'
-              }
-              value={recordData}
-              required
-              disabled={!selectedPatient}
-              onChange={e => setRecordData(e.target.value)}
-              onFocus={e => e.target.style.borderColor = '#16a34a'}
-              onBlur={e => e.target.style.borderColor = '#e5e7eb'}
-            />
-            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, fontWeight: 600 }}>
-              🔒 This data will be encrypted before saving.
+      {/* Patient records */}
+      {selectedPatient && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between',
+            alignItems: 'center', marginBottom: 16,
+          }}>
+            <div className="card-title" style={{ marginBottom: 0 }}>
+              📋 Medical Records — {selectedPatient.first_name} {selectedPatient.last_name}
+              <span style={{ fontSize: 12, color: '#6b7280', fontWeight: 600, marginLeft: 8 }}>
+                ({totalRecords} total)
+              </span>
             </div>
-          </div>
-          <button
-            type="submit"
-            disabled={saving || !selectedPatient}
-            style={{
-              width: '100%', padding: '12px',
-              background: selectedPatient ? '#16a34a' : '#9ca3af',
-              color: 'white', border: 'none', borderRadius: 8,
-              fontWeight: 700, fontSize: 15,
-              cursor: selectedPatient ? 'pointer' : 'not-allowed',
-              transition: 'background 0.2s',
-            }}
-          >
-            {saving
-              ? '⏳ Saving…'
-              : selectedPatient
-                ? `💾 Save Record for ${selectedPatient.first_name || selectedPatient.username}`
-                : '💾 Save Encrypted Record'
-            }
-          </button>
-        </form>
-      </div>
-    </div>
-  )
-}
-
-// ── Search Patient Records Component ──
-function SearchPatientRecords() {
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState([])
-  const [searching, setSearching] = useState(false)
-  const [error, setError] = useState('')
-  const [searched, setSearched] = useState(false)
-  const [expandedPatient, setExpandedPatient] = useState(null)
-
-  // Debounce — 500ms
-  const debouncedQuery = useDebounce(query, 500)
-
-  useEffect(() => {
-    if (!debouncedQuery.trim() || debouncedQuery.trim().length < 2) {
-      setResults([])
-      setError('')
-      setSearched(false)
-      return
-    }
-    doSearch(debouncedQuery.trim())
-  }, [debouncedQuery])
-
-  const doSearch = async (q) => {
-    setSearching(true)
-    setSearched(false)
-    setResults([])
-    setExpandedPatient(null)
-    setError('')
-    try {
-      const res = await api.get(
-        `/patients/search/?q=${encodeURIComponent(q)}`
-      )
-      const r = res.data.results || []
-      setResults(r)
-      setSearched(true)
-      if (r.length === 0) {
-        setError(res.data.error || `No patient found matching "${q}".`)
-      } else if (r.length === 1) {
-        setExpandedPatient(0)
-      }
-    } catch (err) {
-      setError(err.response?.data?.error || 'Search failed.')
-      setSearched(true)
-    } finally {
-      setSearching(false)
-    }
-  }
-
-  const handleManualSearch = () => {
-    if (!query.trim() || query.trim().length < 2) {
-      setError('Please enter at least 2 characters.')
-      return
-    }
-    doSearch(query.trim())
-  }
-
-  return (
-    <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
-        <div style={{ flex: 1, position: 'relative' }}>
-          <input
-            type="text"
-            placeholder="Type patient name or ID number…"
-            value={query}
-            onChange={e => { setQuery(e.target.value); setError('') }}
-            onKeyDown={e => { if (e.key === 'Enter') handleManualSearch() }}
-            style={{
-              width: '100%', padding: '10px 14px',
-              border: '1.5px solid #e5e7eb', borderRadius: 8,
-              fontSize: 14, color: '#000', fontWeight: 'bold',
-              background: 'white', outline: 'none',
-            }}
-            onFocus={e => e.target.style.borderColor = '#16a34a'}
-            onBlur={e => e.target.style.borderColor = '#e5e7eb'}
-          />
-          {searching && (
-            <div style={{
-              position: 'absolute', right: 12, top: '50%',
-              transform: 'translateY(-50%)',
-              fontSize: 12, color: '#9ca3af', fontWeight: 600,
+            <span style={{
+              fontSize: 11, fontWeight: 700,
+              padding: '4px 12px', borderRadius: 999,
+              background: '#fef3c7', color: '#92400e',
+              border: '1px solid #fcd34d',
             }}>
-              Searching…
-            </div>
-          )}
-        </div>
-        <button
-          onClick={handleManualSearch}
-          disabled={searching}
-          className="btn-primary"
-          style={{ padding: '10px 18px', whiteSpace: 'nowrap' }}
-        >
-          {searching ? '⏳' : '🔍 Search'}
-        </button>
-      </div>
+              🛡️ View Only
+            </span>
+          </div>
 
-      <p style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, marginBottom: 12 }}>
-        Auto-searches after you stop typing • Search by name, username, or patient ID
-      </p>
-
-      {error && (
-        <div style={{
-          padding: '10px 14px', background: '#fef2f2',
-          border: '1px solid #fecaca', borderRadius: 8,
-          color: '#dc2626', fontSize: 13, fontWeight: 700, marginBottom: 12,
-        }}>
-          {error}
-        </div>
-      )}
-
-      {searched && results.length === 0 && !error && (
-        <div style={{
-          textAlign: 'center', padding: 24, color: '#9ca3af',
-          fontSize: 13, fontWeight: 600, background: '#f9fafb',
-          borderRadius: 8, border: '1px solid #e5e7eb',
-        }}>
-          No patient found matching <strong>"{query}"</strong>
-        </div>
-      )}
-
-      {results.map((item, idx) => (
-        <div key={item.patient.id} style={{
-          border: '1px solid #e5e7eb', borderRadius: 10,
-          marginBottom: 12, overflow: 'hidden',
-        }}>
-          <div
-            onClick={() => setExpandedPatient(expandedPatient === idx ? null : idx)}
-            style={{
-              padding: '14px 16px', cursor: 'pointer',
-              background: expandedPatient === idx ? '#f0fdf4' : 'white',
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              borderBottom: expandedPatient === idx ? '1px solid #e5e7eb' : 'none',
-              transition: 'background 0.15s',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{
-                width: 44, height: 44, borderRadius: '50%',
-                background: '#d1fae5', display: 'flex',
-                alignItems: 'center', justifyContent: 'center', fontSize: 20,
-              }}>👤</div>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 15, color: '#000' }}>
-                  {item.patient.first_name} {item.patient.last_name}
+          {/* Patient info grid */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+            gap: 12, marginBottom: 20,
+            background: '#f9fafb', borderRadius: 8, padding: 14,
+            border: '1px solid #e5e7eb',
+          }}>
+            {[
+              ['Full Name', `${selectedPatient.first_name} ${selectedPatient.last_name}`],
+              ['Username', `@${selectedPatient.username}`],
+              ['Email', selectedPatient.email || '—'],
+              ['Patient ID', selectedPatient.patient_profile?.patient_id || '—'],
+              ['Date of Birth', selectedPatient.patient_profile?.date_of_birth || '—'],
+              ['Blood Type', selectedPatient.patient_profile?.blood_type || '—'],
+              ['Contact', selectedPatient.patient_profile?.contact_number || '—'],
+              ['Address', selectedPatient.patient_profile?.address || '—'],
+              ['Allergies', selectedPatient.patient_profile?.allergies || '—'],
+            ].map(([label, val]) => (
+              <div key={label}>
+                <div style={{
+                  fontSize: 9, color: '#9ca3af', fontWeight: 700,
+                  textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 3,
+                }}>{label}</div>
+                <div style={{ fontSize: 13, color: '#000', fontWeight: 'bold' }}>
+                  {val}
                 </div>
-                <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>
-                  @{item.patient.username}
-                  {item.patient.patient_profile?.patient_id && (
+              </div>
+            ))}
+          </div>
+
+          {/* Records list */}
+          {loadingRecords ? (
+            <div style={{
+              textAlign: 'center', padding: 24,
+              color: '#9ca3af', fontSize: 13, fontWeight: 600,
+            }}>
+              ⏳ Loading records…
+            </div>
+          ) : records.length === 0 ? (
+            <div style={{
+              textAlign: 'center', padding: 24,
+              color: '#9ca3af', fontSize: 13, fontWeight: 600,
+              background: '#f9fafb', borderRadius: 8,
+              border: '1px dashed #e5e7eb',
+            }}>
+              No medical records found for this patient.
+            </div>
+          ) : (
+            <>
+              {records.map(r => (
+                <div key={r.id} style={{
+                  border: '1px solid #e5e7eb', borderRadius: 10,
+                  padding: 16, marginBottom: 12, background: '#fafafa',
+                }}>
+                  {/* Record header */}
+                  <div style={{
+                    display: 'flex', justifyContent: 'space-between',
+                    alignItems: 'flex-start', marginBottom: 12,
+                    paddingBottom: 10,
+                    borderBottom: '1px solid #f0f0f0',
+                  }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: '#000' }}>
+                        📄 {r.record_title}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#9ca3af', fontWeight: 600, marginTop: 2 }}>
+                        Added by: {r.created_by_name}
+                      </div>
+                    </div>
                     <span style={{
-                      marginLeft: 8, background: '#dcfce7',
-                      color: '#166534', fontSize: 11,
-                      fontWeight: 700, padding: '1px 8px', borderRadius: 999,
+                      fontSize: 11, color: '#9ca3af', fontWeight: 600,
+                      background: '#f3f4f6', padding: '3px 10px', borderRadius: 999,
                     }}>
-                      ID: {item.patient.patient_profile.patient_id}
+                      {new Date(r.created_at).toLocaleDateString('en-PH', {
+                        year: 'numeric', month: 'long', day: 'numeric',
+                      })}
                     </span>
+                  </div>
+
+                  {/* Diagnosis */}
+                  {r.diagnosis && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{
+                        fontSize: 10, color: '#16a34a', fontWeight: 700,
+                        textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4,
+                      }}>Diagnosis</div>
+                      <div style={{
+                        fontSize: 13, color: '#000', fontWeight: 'bold',
+                        whiteSpace: 'pre-wrap', lineHeight: 1.7,
+                        background: 'white', padding: 10,
+                        borderRadius: 6, border: '1px solid #e5e7eb',
+                      }}>
+                        {r.diagnosis}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Prescription */}
+                  {r.prescription && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{
+                        fontSize: 10, color: '#2563eb', fontWeight: 700,
+                        textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4,
+                      }}>Prescription</div>
+                      <div style={{
+                        fontSize: 13, color: '#000', fontWeight: 'bold',
+                        whiteSpace: 'pre-wrap', lineHeight: 1.7,
+                        background: 'white', padding: 10,
+                        borderRadius: 6, border: '1px solid #e5e7eb',
+                      }}>
+                        {r.prescription}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Notes */}
+                  {r.notes && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{
+                        fontSize: 10, color: '#9ca3af', fontWeight: 700,
+                        textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4,
+                      }}>Notes</div>
+                      <div style={{
+                        fontSize: 13, color: '#000', fontWeight: 'bold',
+                        whiteSpace: 'pre-wrap', lineHeight: 1.7,
+                        background: 'white', padding: 10,
+                        borderRadius: 6, border: '1px solid #e5e7eb',
+                      }}>
+                        {r.notes}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Legacy data field */}
+                  {!r.diagnosis && r.data && (
+                    <div>
+                      <div style={{
+                        fontSize: 10, color: '#9ca3af', fontWeight: 700,
+                        textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4,
+                      }}>Record Data</div>
+                      <div style={{
+                        fontSize: 13, color: '#000', fontWeight: 'bold',
+                        whiteSpace: 'pre-wrap', lineHeight: 1.7,
+                        background: 'white', padding: 10,
+                        borderRadius: 6, border: '1px solid #e5e7eb',
+                      }}>
+                        {r.data}
+                      </div>
+                    </div>
                   )}
                 </div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{
-                background: '#f0fdf4', color: '#16a34a',
-                fontSize: 12, fontWeight: 700, padding: '3px 10px',
-                borderRadius: 999, border: '1px solid #bbf7d0',
-              }}>
-                {item.total_records} record{item.total_records !== 1 ? 's' : ''}
-              </span>
-              <span style={{ color: '#9ca3af', fontSize: 18 }}>
-                {expandedPatient === idx ? '▲' : '▼'}
-              </span>
-            </div>
-          </div>
+              ))}
 
-          {expandedPatient === idx && (
-            <div style={{ padding: 16, background: 'white' }}>
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-                gap: 12, marginBottom: 16,
-                background: '#f9fafb', borderRadius: 8, padding: 14,
-              }}>
-                {[
-                  ['Full Name', `${item.patient.first_name} ${item.patient.last_name}`],
-                  ['Username', `@${item.patient.username}`],
-                  ['Email', item.patient.email],
-                  ['Patient ID', item.patient.patient_profile?.patient_id || '—'],
-                  ['Date of Birth', item.patient.patient_profile?.date_of_birth || '—'],
-                  ['Blood Type', item.patient.patient_profile?.blood_type || '—'],
-                  ['Contact', item.patient.patient_profile?.contact_number || '—'],
-                  ['Address', item.patient.patient_profile?.address || '—'],
-                  ['Allergies', item.patient.patient_profile?.allergies || '—'],
-                ].map(([label, val]) => (
-                  <div key={label}>
-                    <div style={{
-                      fontSize: 10, color: '#9ca3af',
-                      fontWeight: 700, textTransform: 'uppercase', marginBottom: 2,
-                    }}>{label}</div>
-                    <div style={{ fontSize: 13, color: '#000', fontWeight: 'bold' }}>
-                      {val}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ fontWeight: 700, fontSize: 14, color: '#111827', marginBottom: 10 }}>
-                📋 Medical Records ({item.total_records})
-              </div>
-
-              {item.medical_records.length === 0 ? (
+              {/* Pagination */}
+              {totalPages > 1 && (
                 <div style={{
-                  textAlign: 'center', padding: 16, color: '#9ca3af',
-                  fontSize: 13, fontWeight: 600, background: '#f9fafb',
-                  borderRadius: 8, border: '1px dashed #e5e7eb',
+                  display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', gap: 12, marginTop: 16,
                 }}>
-                  No medical records yet.
+                  <button
+                    onClick={() => loadPatientRecords(selectedPatient.id, currentPage - 1)}
+                    disabled={currentPage === 1}
+                    className="btn-secondary"
+                    style={{ padding: '7px 16px', fontSize: 13 }}
+                  >
+                    ← Previous
+                  </button>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#374151' }}>
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => loadPatientRecords(selectedPatient.id, currentPage + 1)}
+                    disabled={currentPage === totalPages}
+                    className="btn-secondary"
+                    style={{ padding: '7px 16px', fontSize: 13 }}
+                  >
+                    Next →
+                  </button>
                 </div>
-              ) : (
-                item.medical_records.map(r => (
-                  <div key={r.id} style={{
-                    border: '1px solid #e5e7eb', borderRadius: 8,
-                    padding: 14, marginBottom: 10, background: '#fafafa',
-                  }}>
-                    <div style={{
-                      display: 'flex', justifyContent: 'space-between',
-                      alignItems: 'center', marginBottom: 8,
-                    }}>
-                      <span style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
-                        📄 {r.record_title}
-                      </span>
-                      <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600 }}>
-                        {new Date(r.created_at).toLocaleDateString()}
-                      </span>
-                    </div>
-                    <div style={{
-                      fontSize: 13, color: '#000', fontWeight: 'bold',
-                      whiteSpace: 'pre-wrap', lineHeight: 1.7,
-                      background: 'white', padding: 10,
-                      borderRadius: 6, border: '1px solid #f0f0f0',
-                    }}>
-                      {r.data}
-                    </div>
-                    <div style={{
-                      fontSize: 11, color: '#9ca3af', marginTop: 8, fontWeight: 600,
-                    }}>
-                      Added by: {r.created_by_name}
-                    </div>
-                  </div>
-                ))
               )}
-            </div>
+            </>
           )}
         </div>
-      ))}
+      )}
     </div>
   )
 }
@@ -711,7 +616,6 @@ export default function AdminDashboard() {
   const [resetError, setResetError] = useState('')
   const [resetLoading, setResetLoading] = useState(false)
 
-  // Debounced values for users and appointments
   const debouncedUserSearch = useDebounce(userSearch, 400)
   const debouncedApptSearch = useDebounce(apptSearch, 400)
 
@@ -724,11 +628,9 @@ export default function AdminDashboard() {
   const loadNotifications = useCallback(async () => {
     try { const r = await api.get('/notifications/'); setNotifications(r.data) } catch (_) {}
   }, [])
-
   const loadStats = useCallback(async () => {
     try { const r = await api.get('/appointments/stats/overview/'); setStats(r.data) } catch (_) {}
   }, [])
-
   const loadUsers = useCallback(async () => {
     try {
       const params = new URLSearchParams()
@@ -738,7 +640,6 @@ export default function AdminDashboard() {
       setUsers(r.data)
     } catch (_) {}
   }, [debouncedUserSearch, userRoleFilter])
-
   const loadAppointments = useCallback(async () => {
     try {
       const params = new URLSearchParams()
@@ -752,11 +653,9 @@ export default function AdminDashboard() {
   useEffect(() => {
     loadNotifications(); loadStats(); loadAppointments()
   }, [])
-
   useEffect(() => {
     if (tab === 'Users') loadUsers()
   }, [tab, debouncedUserSearch, userRoleFilter])
-
   useEffect(() => {
     if (tab === 'Appointments' || tab === 'Overview') loadAppointments()
   }, [tab, debouncedApptSearch, apptStatusFilter])
@@ -778,7 +677,7 @@ export default function AdminDashboard() {
       setActionMsg('Appointment confirmed. Patient notified.')
       loadAppointments(); loadStats()
     } catch (err) {
-      setActionMsg(err.response?.data?.error || 'Failed to confirm.')
+      setActionMsg(err.response?.data?.error || 'Failed.')
     }
     setConfirmTarget(null)
   }
@@ -908,8 +807,7 @@ export default function AdminDashboard() {
       <main className="main-content">
         <div style={{
           display: 'flex', justifyContent: 'space-between',
-          alignItems: 'center', marginBottom: 24,
-          flexWrap: 'wrap', gap: 12,
+          alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12,
         }}>
           <h1 style={{ fontSize: 22, fontWeight: 800, color: '#111827' }}>
             {tab === 'Overview' ? 'Admin Dashboard' : tab}
@@ -921,10 +819,8 @@ export default function AdminDashboard() {
           <div className="alert-success" style={{ marginBottom: 16 }}>
             {actionMsg}
             <button onClick={() => setActionMsg('')}
-              style={{
-                float: 'right', background: 'none', border: 'none',
-                cursor: 'pointer', fontWeight: 700, color: '#065f46',
-              }}>✕</button>
+              style={{ float: 'right', background: 'none', border: 'none',
+                cursor: 'pointer', fontWeight: 700, color: '#065f46' }}>✕</button>
           </div>
         )}
 
@@ -1007,6 +903,7 @@ export default function AdminDashboard() {
                 <option value="admin">Admins</option>
               </select>
             </div>
+
             <div style={{
               display: 'grid',
               gridTemplateColumns: selectedUser ? '1fr 320px' : '1fr',
@@ -1078,6 +975,7 @@ export default function AdminDashboard() {
                   </tbody>
                 </table>
               </div>
+
               {selectedUser && (
                 <div style={{
                   border: '1px solid #e5e7eb', borderRadius: 10,
@@ -1180,19 +1078,8 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* RECORDS */}
-        {tab === 'Records' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-            <div className="card">
-              <div className="card-title">🔍 Search Patient Records</div>
-              <SearchPatientRecords />
-            </div>
-            <div className="card">
-              <div className="card-title">➕ Add Medical Record</div>
-              <AddMedicalRecord />
-            </div>
-          </div>
-        )}
+        {/* RECORDS — Read only, search only */}
+        {tab === 'Records' && <AdminRecordsTab />}
 
         {/* MESSAGES */}
         {tab === 'Messages' && (
