@@ -4,7 +4,6 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.core.paginator import Paginator
 from django.shortcuts import get_object_or_404
-from django.db.models import Q
 
 from .models import Prescription, MedicalRecord, MedicalRecordAuditLog
 from .serializers import (
@@ -37,7 +36,6 @@ class PrescriptionListView(APIView):
             qs = Prescription.objects.all().select_related('doctor', 'patient')
         else:
             qs = Prescription.objects.none()
-
         serializer = PrescriptionSerializer(qs, many=True)
         return Response(serializer.data)
 
@@ -54,12 +52,15 @@ class CreatePrescriptionView(APIView):
         serializer = CreatePrescriptionSerializer(data=request.data)
         if serializer.is_valid():
             prescription = serializer.save(doctor=request.user)
-            send_notification(
-                prescription.patient,
-                f'Dr. {request.user.get_full_name()} added a new prescription for you.',
-                notif_type='new_prescription',
-                extra={'prescription_id': prescription.id},
-            )
+            try:
+                send_notification(
+                    prescription.patient,
+                    f'Dr. {request.user.get_full_name()} added a new prescription for you.',
+                    notif_type='new_prescription',
+                    extra={'prescription_id': prescription.id},
+                )
+            except Exception:
+                pass
             return Response(
                 PrescriptionSerializer(prescription).data,
                 status=status.HTTP_201_CREATED,
@@ -70,9 +71,13 @@ class CreatePrescriptionView(APIView):
 class MedicalRecordListView(APIView):
     """
     Returns paginated medical records.
-    Doctor: only their assigned patients.
-    Admin: only after selecting a specific patient (patient_user_id required).
-    Patient: only their own records.
+
+    RULES:
+    - Patient: sees only their own records
+    - Doctor: can view records of ANY registered patient
+              (no appointment restriction)
+    - Admin:  can view records of ANY patient
+              but ONLY after searching and selecting a patient
     """
     permission_classes = [IsAuthenticated]
 
@@ -80,18 +85,23 @@ class MedicalRecordListView(APIView):
         user = request.user
         page = int(request.query_params.get('page', 1))
 
+        # ── PATIENT ──
         if user.role == 'patient':
             qs = MedicalRecord.objects.filter(
                 patient=user
             ).select_related('patient', 'created_by')
+            try:
+                MedicalRecordAuditLog.objects.create(
+                    accessed_by=user,
+                    action='view',
+                    notes='Patient viewed own records',
+                )
+            except Exception:
+                pass
 
-            # Log view
-            MedicalRecordAuditLog.objects.create(
-                accessed_by=user,
-                action='view',
-                notes='Patient viewed own records',
-            )
-
+        # ── DOCTOR ──
+        # Doctor can view records of ANY patient in the system
+        # No appointment restriction
         elif user.role == 'doctor':
             patient_id = request.query_params.get('patient_id')
             if not patient_id:
@@ -99,33 +109,37 @@ class MedicalRecordListView(APIView):
                     {'error': 'patient_id is required.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            # Doctor can only access their assigned patients
-            from appointments.models import Appointment
-            assigned_ids = Appointment.objects.filter(
-                doctor=user
-            ).values_list('patient_id', flat=True).distinct()
 
-            if int(patient_id) not in list(assigned_ids):
+            # Verify the patient exists
+            try:
+                patient = CustomUser.objects.get(
+                    pk=patient_id, role='patient'
+                )
+            except CustomUser.DoesNotExist:
                 return Response(
-                    {'error': 'This patient is not assigned to you.'},
-                    status=status.HTTP_403_FORBIDDEN,
+                    {'error': 'Patient not found.'},
+                    status=status.HTTP_404_NOT_FOUND,
                 )
 
             qs = MedicalRecord.objects.filter(
-                patient_id=patient_id
+                patient=patient
             ).select_related('patient', 'created_by')
 
-            # Log view
-            MedicalRecordAuditLog.objects.create(
-                accessed_by=user,
-                action='view',
-                notes=f'Doctor viewed records for patient_id={patient_id}',
-            )
+            try:
+                MedicalRecordAuditLog.objects.create(
+                    accessed_by=user,
+                    action='view',
+                    notes=f'Doctor viewed records for patient_id={patient_id}',
+                )
+            except Exception:
+                pass
 
+        # ── ADMIN ──
+        # Admin can view records of any patient
+        # but must select a patient first (patient_user_id required)
         elif user.role == 'admin':
             patient_user_id = request.query_params.get('patient_user_id')
             if not patient_user_id:
-                # Admin must search and select a patient first
                 return Response({
                     'results': [],
                     'count': 0,
@@ -138,17 +152,19 @@ class MedicalRecordListView(APIView):
                 patient_id=patient_user_id
             ).select_related('patient', 'created_by')
 
-            # Log admin view
-            MedicalRecordAuditLog.objects.create(
-                accessed_by=user,
-                action='view',
-                notes=f'Admin viewed records for patient_user_id={patient_user_id}',
-            )
+            try:
+                MedicalRecordAuditLog.objects.create(
+                    accessed_by=user,
+                    action='view',
+                    notes=f'Admin viewed records for patient_user_id={patient_user_id}',
+                )
+            except Exception:
+                pass
 
         else:
             return Response({'error': 'Unauthorized.'}, status=403)
 
-        # Pagination
+        # Paginate
         paginator = Paginator(qs, PAGE_SIZE)
         total_pages = paginator.num_pages
 
@@ -158,7 +174,6 @@ class MedicalRecordListView(APIView):
             page_obj = paginator.page(1)
 
         serializer = MedicalRecordSerializer(page_obj.object_list, many=True)
-
         return Response({
             'results': serializer.data,
             'count': paginator.count,
@@ -171,19 +186,23 @@ class MedicalRecordListView(APIView):
 
 class CreateMedicalRecordView(APIView):
     """
-    Only doctors can create records.
-    Admins are strictly read-only.
+    RULES:
+    - Doctor: can create records for ANY registered patient
+              No appointment needed
+    - Admin:  STRICTLY READ-ONLY — cannot create records
+    - Patient: cannot create records
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # STRICT: Admin cannot create records
+        # Admin is strictly read-only
         if request.user.role == 'admin':
             return Response(
-                {'error': 'Admins cannot create medical records. Read-only access only.'},
+                {'error': 'Admins cannot create records. View only.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # Only doctors can create
         if request.user.role != 'doctor':
             return Response(
                 {'error': 'Only doctors can create medical records.'},
@@ -191,14 +210,15 @@ class CreateMedicalRecordView(APIView):
             )
 
         patient_id = request.data.get('patient')
-        record_title = request.data.get('record_title', 'Medical Record')
+        record_title = request.data.get('record_title', '').strip()
         diagnosis = request.data.get('diagnosis', '').strip()
         notes = request.data.get('notes', '').strip()
         prescription = request.data.get('prescription', '').strip()
 
+        # Validate required fields
         if not patient_id:
             return Response(
-                {'error': 'Patient ID is required.'},
+                {'error': 'Patient is required.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if not diagnosis:
@@ -207,44 +227,56 @@ class CreateMedicalRecordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        patient = get_object_or_404(CustomUser, pk=patient_id)
-
-        # Verify doctor is assigned to this patient
-        from appointments.models import Appointment
-        assigned = Appointment.objects.filter(
-            doctor=request.user, patient=patient
-        ).exists()
-        if not assigned:
+        # Find patient — must be registered as a patient
+        try:
+            patient = CustomUser.objects.get(pk=patient_id, role='patient')
+        except CustomUser.DoesNotExist:
             return Response(
-                {'error': 'You can only create records for your assigned patients.'},
-                status=status.HTTP_403_FORBIDDEN,
+                {'error': 'Patient not found in the system.'},
+                status=status.HTTP_404_NOT_FOUND,
             )
 
-        record = MedicalRecord(
-            patient=patient,
-            record_title=record_title,
-            created_by=request.user,
-        )
-        record.set_diagnosis(diagnosis)
-        record.set_notes(notes)
-        record.set_prescription(prescription)
-        record.save()
+        # Create and encrypt the record
+        try:
+            record = MedicalRecord(
+                patient=patient,
+                record_title=record_title if record_title else 'Medical Record',
+                created_by=request.user,
+            )
+            record.set_diagnosis(diagnosis)
+            if notes:
+                record.set_notes(notes)
+            if prescription:
+                record.set_prescription(prescription)
+            record.save()
 
-        # Audit log
-        MedicalRecordAuditLog.objects.create(
-            record=record,
-            accessed_by=request.user,
-            action='create',
-            notes=f'Doctor created record for patient {patient.username}',
-        )
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to save record. Please run migrations. Detail: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-        # Notify patient
-        send_notification(
-            patient,
-            f'Dr. {request.user.get_full_name()} has added a new medical record for you.',
-            notif_type='new_record',
-            extra={'record_id': record.id},
-        )
+        # Audit log — failure does not block save
+        try:
+            MedicalRecordAuditLog.objects.create(
+                record=record,
+                accessed_by=request.user,
+                action='create',
+                notes=f'Dr. {request.user.get_full_name()} created record for {patient.get_full_name()}',
+            )
+        except Exception:
+            pass
+
+        # Notify patient — failure does not block save
+        try:
+            send_notification(
+                patient,
+                f'Dr. {request.user.get_full_name()} has added a new medical record for you.',
+                notif_type='new_record',
+                extra={'record_id': record.id},
+            )
+        except Exception:
+            pass
 
         return Response(
             MedicalRecordSerializer(record).data,
@@ -253,7 +285,7 @@ class CreateMedicalRecordView(APIView):
 
 
 class AuditLogListView(APIView):
-    """Admin-only: view audit logs with pagination."""
+    """Admin only — view audit logs."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):

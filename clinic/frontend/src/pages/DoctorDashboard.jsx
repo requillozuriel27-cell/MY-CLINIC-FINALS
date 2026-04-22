@@ -8,7 +8,7 @@ import ConfirmModal from '../components/ConfirmModal'
 import NotificationBell from '../components/NotificationBell'
 import MessagingPanel from '../components/MessagingPanel'
 
-// Debounce hook
+// ── Debounce hook ──
 function useDebounce(value, delay) {
   const [debounced, setDebounced] = useState(value)
   useEffect(() => {
@@ -18,8 +18,8 @@ function useDebounce(value, delay) {
   return debounced
 }
 
-// ── Records Tab Component ──
-function RecordsTab({ doctorId }) {
+// ── Records Tab ──
+function RecordsTab() {
   const [nameQuery, setNameQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searching, setSearching] = useState(false)
@@ -30,8 +30,6 @@ function RecordsTab({ doctorId }) {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [totalRecords, setTotalRecords] = useState(0)
-
-  // Create form
   const [showForm, setShowForm] = useState(false)
   const [diagnosis, setDiagnosis] = useState('')
   const [notes, setNotes] = useState('')
@@ -43,7 +41,6 @@ function RecordsTab({ doctorId }) {
 
   const debouncedQuery = useDebounce(nameQuery, 500)
 
-  // Auto search with debounce
   useEffect(() => {
     if (!debouncedQuery.trim() || debouncedQuery.trim().length < 2) {
       setSearchResults([])
@@ -59,16 +56,14 @@ function RecordsTab({ doctorId }) {
     setSearchResults([])
     setSearchError('')
     try {
-      const res = await api.get(
-        `/patients/search/?q=${encodeURIComponent(q)}`
-      )
+      const res = await api.get(`/patients/search/?q=${encodeURIComponent(q)}`)
       const results = res.data.results || []
       setSearchResults(results)
       if (results.length === 0) {
         setSearchError(`No patients found matching "${q}".`)
       }
     } catch (err) {
-      setSearchError('Search failed. Please try again.')
+      setSearchError('Search failed. Make sure the backend is running.')
     } finally {
       setSearching(false)
     }
@@ -83,6 +78,8 @@ function RecordsTab({ doctorId }) {
         : item.patient.username
     )
     setSearchError('')
+    setSaveSuccess('')
+    setSaveError('')
     setCurrentPage(1)
     loadRecords(item.patient.id, 1)
   }
@@ -90,14 +87,12 @@ function RecordsTab({ doctorId }) {
   const loadRecords = async (patientId, page = 1) => {
     setLoadingRecords(true)
     try {
-      const res = await api.get(
-        `/records/?patient_id=${patientId}&page=${page}`
-      )
+      const res = await api.get(`/records/?patient_id=${patientId}&page=${page}`)
       setRecords(res.data.results || [])
       setTotalPages(res.data.total_pages || 1)
       setTotalRecords(res.data.count || 0)
       setCurrentPage(page)
-    } catch (_) {
+    } catch (err) {
       setRecords([])
     } finally {
       setLoadingRecords(false)
@@ -130,11 +125,11 @@ function RecordsTab({ doctorId }) {
       loadRecords(selectedPatient.id, 1)
     } catch (err) {
       const d = err.response?.data
-      setSaveError(
-        typeof d === 'object'
-          ? Object.values(d).flat().join(' ')
-          : 'Failed to save. Please try again.'
-      )
+      if (typeof d === 'object') {
+        setSaveError(Object.values(d).flat().join(' '))
+      } else {
+        setSaveError('Failed to save. Please run: python manage.py makemigrations records && python manage.py migrate')
+      }
     } finally {
       setSaving(false)
     }
@@ -148,6 +143,7 @@ function RecordsTab({ doctorId }) {
     setSaveSuccess('')
     setSaveError('')
     setSearchError('')
+    setSearchResults([])
   }
 
   const inp = {
@@ -160,7 +156,10 @@ function RecordsTab({ doctorId }) {
     <div>
       {/* Search section */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-title">🔍 Search Patient</div>
+        <div className="card-title">🔍 Search Any Registered Patient</div>
+        <p style={{ fontSize: 12, color: '#6b7280', fontWeight: 600, marginBottom: 12 }}>
+          You can search and create records for any patient registered in the system.
+        </p>
 
         <div style={{ position: 'relative' }}>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -168,7 +167,7 @@ function RecordsTab({ doctorId }) {
               <input
                 style={inp}
                 type="text"
-                placeholder="Type patient name e.g. Jane, Juan…"
+                placeholder="Type patient name e.g. Juan, Jane Dela Cruz…"
                 value={nameQuery}
                 onChange={e => {
                   setNameQuery(e.target.value)
@@ -183,18 +182,14 @@ function RecordsTab({ doctorId }) {
                   position: 'absolute', right: 12, top: '50%',
                   transform: 'translateY(-50%)',
                   fontSize: 12, color: '#9ca3af', fontWeight: 600,
-                }}>
-                  Searching…
-                </span>
+                }}>Searching…</span>
               )}
               {nameQuery && nameQuery !== debouncedQuery && !searching && (
                 <span style={{
                   position: 'absolute', right: 12, top: '50%',
                   transform: 'translateY(-50%)',
                   fontSize: 11, color: '#9ca3af', fontWeight: 600,
-                }}>
-                  typing…
-                </span>
+                }}>typing…</span>
               )}
             </div>
             <button
@@ -213,17 +208,19 @@ function RecordsTab({ doctorId }) {
 
           {searchError && !selectedPatient && (
             <div style={{
-              marginTop: 8, fontSize: 13, color: '#dc2626', fontWeight: 700,
+              marginTop: 8, padding: '10px 14px',
+              background: '#fef2f2', border: '1px solid #fecaca',
+              borderRadius: 8, fontSize: 13, color: '#dc2626', fontWeight: 700,
             }}>
-              {searchError}
+              ⚠️ {searchError}
             </div>
           )}
 
           {/* Dropdown results */}
-          {searchResults.length > 0 && (
+          {searchResults.length > 0 && !selectedPatient && (
             <div style={{
-              position: 'absolute', left: 0, right: 90,
-              top: '100%', zIndex: 100,
+              position: 'absolute', left: 0, right: 100,
+              top: '100%', zIndex: 200,
               border: '1px solid #e5e7eb', borderRadius: 8,
               overflow: 'hidden',
               boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
@@ -235,6 +232,7 @@ function RecordsTab({ doctorId }) {
                 fontSize: 11, color: '#16a34a', fontWeight: 700,
               }}>
                 {searchResults.length} patient{searchResults.length !== 1 ? 's' : ''} found
+                — click to select
               </div>
               {searchResults.map(item => (
                 <div
@@ -250,21 +248,21 @@ function RecordsTab({ doctorId }) {
                   onMouseLeave={e => e.currentTarget.style.background = 'white'}
                 >
                   <div style={{
-                    width: 34, height: 34, borderRadius: '50%',
+                    width: 36, height: 36, borderRadius: '50%',
                     background: '#d1fae5', display: 'flex',
                     alignItems: 'center', justifyContent: 'center', fontSize: 16,
                   }}>👤</div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: '#000' }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
                       {item.patient.first_name} {item.patient.last_name}
                     </div>
                     <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600 }}>
                       @{item.patient.username}
                       {item.patient.patient_profile?.patient_id && (
                         <span style={{
-                          marginLeft: 6, background: '#dcfce7',
-                          color: '#166534', fontSize: 10,
-                          fontWeight: 700, padding: '1px 6px', borderRadius: 999,
+                          marginLeft: 6, background: '#dcfce7', color: '#166534',
+                          fontSize: 10, fontWeight: 700,
+                          padding: '1px 6px', borderRadius: 999,
                         }}>
                           ID: {item.patient.patient_profile.patient_id}
                         </span>
@@ -287,13 +285,13 @@ function RecordsTab({ doctorId }) {
         {/* Selected patient */}
         {selectedPatient && (
           <div style={{
-            marginTop: 12, padding: '10px 14px',
+            marginTop: 12, padding: '12px 14px',
             background: '#d1fae5', borderRadius: 8,
             border: '1.5px solid #16a34a',
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: 18 }}>✅</span>
+              <span style={{ fontSize: 20 }}>✅</span>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
                   {selectedPatient.first_name} {selectedPatient.last_name}
@@ -308,18 +306,16 @@ function RecordsTab({ doctorId }) {
                 </div>
               </div>
             </div>
-            <button
-              onClick={clearSelection}
+            <button onClick={clearSelection}
               style={{
                 background: 'none', border: 'none',
                 cursor: 'pointer', color: '#065f46', fontSize: 18,
-              }}
-            >✕</button>
+              }}>✕</button>
           </div>
         )}
       </div>
 
-      {/* Records section — only shown after patient selected */}
+      {/* Records + Create form — only shown after selecting a patient */}
       {selectedPatient && (
         <>
           {saveSuccess && (
@@ -338,9 +334,7 @@ function RecordsTab({ doctorId }) {
             }}>
               <div className="card-title" style={{ marginBottom: 0 }}>
                 📋 Medical Records
-                <span style={{
-                  marginLeft: 8, fontSize: 12, color: '#6b7280', fontWeight: 600,
-                }}>
+                <span style={{ marginLeft: 8, fontSize: 12, color: '#6b7280', fontWeight: 600 }}>
                   ({totalRecords} total)
                 </span>
               </div>
@@ -349,20 +343,18 @@ function RecordsTab({ doctorId }) {
                 className="btn-primary"
                 style={{ padding: '7px 16px', fontSize: 13 }}
               >
-                {showForm ? '✕ Close Form' : '➕ Create Record'}
+                {showForm ? '✕ Close' : '➕ Create Record'}
               </button>
             </div>
 
-            {/* Create record form */}
+            {/* Create form */}
             {showForm && (
               <div style={{
                 background: '#f0fdf4', borderRadius: 10,
                 padding: 16, marginBottom: 20,
                 border: '1.5px solid #16a34a',
               }}>
-                <div style={{
-                  fontWeight: 700, fontSize: 14, color: '#14532d', marginBottom: 14,
-                }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: '#14532d', marginBottom: 14 }}>
                   📝 New Record for {selectedPatient.first_name} {selectedPatient.last_name}
                 </div>
 
@@ -373,83 +365,47 @@ function RecordsTab({ doctorId }) {
                     <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
                       Record Title
                     </label>
-                    <input
-                      style={{
-                        width: '100%', padding: '10px 14px',
-                        border: '1.5px solid #e5e7eb', borderRadius: 8,
-                        fontSize: 14, color: '#000', fontWeight: 'bold', background: 'white',
-                      }}
-                      type="text"
+                    <input style={inp} type="text"
                       placeholder="e.g. Initial Checkup, Follow-up Visit"
                       value={recordTitle}
-                      onChange={e => setRecordTitle(e.target.value)}
-                    />
+                      onChange={e => setRecordTitle(e.target.value)} />
                   </div>
-
                   <div className="form-group">
                     <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
                       Diagnosis *
                     </label>
-                    <textarea
-                      style={{
-                        width: '100%', padding: '10px 14px',
-                        border: '1.5px solid #e5e7eb', borderRadius: 8,
-                        fontSize: 14, color: '#000', fontWeight: 'bold',
-                        background: 'white', minHeight: 80, resize: 'vertical',
-                      }}
-                      placeholder="Enter diagnosis…"
-                      value={diagnosis}
-                      required
-                      onChange={e => setDiagnosis(e.target.value)}
-                    />
+                    <textarea style={{
+                      ...inp, minHeight: 80, resize: 'vertical',
+                    }} placeholder="Enter diagnosis…"
+                      value={diagnosis} required
+                      onChange={e => setDiagnosis(e.target.value)} />
                   </div>
-
                   <div className="form-group">
                     <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
                       Prescription
                     </label>
-                    <textarea
-                      style={{
-                        width: '100%', padding: '10px 14px',
-                        border: '1.5px solid #e5e7eb', borderRadius: 8,
-                        fontSize: 14, color: '#000', fontWeight: 'bold',
-                        background: 'white', minHeight: 80, resize: 'vertical',
-                      }}
-                      placeholder="Enter prescription / medicines…"
+                    <textarea style={{
+                      ...inp, minHeight: 80, resize: 'vertical',
+                    }} placeholder="Enter medicines / prescription…"
                       value={prescription}
-                      onChange={e => setPrescription(e.target.value)}
-                    />
+                      onChange={e => setPrescription(e.target.value)} />
                   </div>
-
                   <div className="form-group">
                     <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
                       Notes
                     </label>
-                    <textarea
-                      style={{
-                        width: '100%', padding: '10px 14px',
-                        border: '1.5px solid #e5e7eb', borderRadius: 8,
-                        fontSize: 14, color: '#000', fontWeight: 'bold',
-                        background: 'white', minHeight: 70, resize: 'vertical',
-                      }}
-                      placeholder="Additional notes or instructions…"
+                    <textarea style={{
+                      ...inp, minHeight: 70, resize: 'vertical',
+                    }} placeholder="Additional notes or instructions…"
                       value={notes}
-                      onChange={e => setNotes(e.target.value)}
-                    />
+                      onChange={e => setNotes(e.target.value)} />
                   </div>
-
-                  <div style={{
-                    fontSize: 11, color: '#9ca3af', marginBottom: 12, fontWeight: 600,
-                  }}>
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 12, fontWeight: 600 }}>
                     🔒 All fields are encrypted before saving.
                   </div>
-
-                  <button
-                    type="submit"
-                    disabled={saving}
+                  <button type="submit" disabled={saving}
                     className="btn-primary"
-                    style={{ width: '100%', padding: 12, fontSize: 15 }}
-                  >
+                    style={{ width: '100%', padding: 12, fontSize: 15 }}>
                     {saving ? '⏳ Saving…' : '💾 Save Record'}
                   </button>
                 </form>
@@ -458,18 +414,14 @@ function RecordsTab({ doctorId }) {
 
             {/* Records list */}
             {loadingRecords ? (
-              <div style={{
-                textAlign: 'center', padding: 24,
-                color: '#9ca3af', fontSize: 13, fontWeight: 600,
-              }}>
+              <div style={{ textAlign: 'center', padding: 24, color: '#9ca3af', fontSize: 13, fontWeight: 600 }}>
                 Loading records…
               </div>
             ) : records.length === 0 ? (
               <div style={{
-                textAlign: 'center', padding: 24,
-                color: '#9ca3af', fontSize: 13, fontWeight: 600,
-                background: '#f9fafb', borderRadius: 8,
-                border: '1px dashed #e5e7eb',
+                textAlign: 'center', padding: 24, color: '#9ca3af',
+                fontSize: 13, fontWeight: 600, background: '#f9fafb',
+                borderRadius: 8, border: '1px dashed #e5e7eb',
               }}>
                 No medical records yet for this patient.
                 <br />
@@ -487,6 +439,7 @@ function RecordsTab({ doctorId }) {
                     <div style={{
                       display: 'flex', justifyContent: 'space-between',
                       alignItems: 'center', marginBottom: 10,
+                      paddingBottom: 8, borderBottom: '1px solid #f0f0f0',
                     }}>
                       <span style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
                         📄 {r.record_title}
@@ -503,17 +456,13 @@ function RecordsTab({ doctorId }) {
                         <div style={{
                           fontSize: 10, color: '#16a34a', fontWeight: 700,
                           textTransform: 'uppercase', marginBottom: 3,
-                        }}>
-                          Diagnosis
-                        </div>
+                        }}>Diagnosis</div>
                         <div style={{
                           fontSize: 13, color: '#000', fontWeight: 'bold',
                           whiteSpace: 'pre-wrap', lineHeight: 1.6,
                           background: 'white', padding: 8,
                           borderRadius: 6, border: '1px solid #f0f0f0',
-                        }}>
-                          {r.diagnosis}
-                        </div>
+                        }}>{r.diagnosis}</div>
                       </div>
                     )}
 
@@ -522,17 +471,13 @@ function RecordsTab({ doctorId }) {
                         <div style={{
                           fontSize: 10, color: '#2563eb', fontWeight: 700,
                           textTransform: 'uppercase', marginBottom: 3,
-                        }}>
-                          Prescription
-                        </div>
+                        }}>Prescription</div>
                         <div style={{
                           fontSize: 13, color: '#000', fontWeight: 'bold',
                           whiteSpace: 'pre-wrap', lineHeight: 1.6,
                           background: 'white', padding: 8,
                           borderRadius: 6, border: '1px solid #f0f0f0',
-                        }}>
-                          {r.prescription}
-                        </div>
+                        }}>{r.prescription}</div>
                       </div>
                     )}
 
@@ -541,17 +486,13 @@ function RecordsTab({ doctorId }) {
                         <div style={{
                           fontSize: 10, color: '#9ca3af', fontWeight: 700,
                           textTransform: 'uppercase', marginBottom: 3,
-                        }}>
-                          Notes
-                        </div>
+                        }}>Notes</div>
                         <div style={{
                           fontSize: 13, color: '#000', fontWeight: 'bold',
                           whiteSpace: 'pre-wrap', lineHeight: 1.6,
                           background: 'white', padding: 8,
                           borderRadius: 6, border: '1px solid #f0f0f0',
-                        }}>
-                          {r.notes}
-                        </div>
+                        }}>{r.notes}</div>
                       </div>
                     )}
 
@@ -560,10 +501,15 @@ function RecordsTab({ doctorId }) {
                       <div style={{
                         fontSize: 13, color: '#000', fontWeight: 'bold',
                         whiteSpace: 'pre-wrap', lineHeight: 1.6,
-                      }}>
-                        {r.data}
-                      </div>
+                      }}>{r.data}</div>
                     )}
+
+                    <div style={{
+                      fontSize: 11, color: '#9ca3af',
+                      marginTop: 8, fontWeight: 600,
+                    }}>
+                      Added by: {r.created_by_name}
+                    </div>
                   </div>
                 ))}
 
@@ -577,21 +523,17 @@ function RecordsTab({ doctorId }) {
                       onClick={() => loadRecords(selectedPatient.id, currentPage - 1)}
                       disabled={currentPage === 1}
                       className="btn-secondary"
-                      style={{ padding: '6px 14px', fontSize: 13 }}
-                    >
+                      style={{ padding: '6px 14px', fontSize: 13 }}>
                       ← Prev
                     </button>
-                    <span style={{
-                      fontSize: 13, fontWeight: 700, color: '#374151',
-                    }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#374151' }}>
                       Page {currentPage} of {totalPages}
                     </span>
                     <button
                       onClick={() => loadRecords(selectedPatient.id, currentPage + 1)}
                       disabled={currentPage === totalPages}
                       className="btn-secondary"
-                      style={{ padding: '6px 14px', fontSize: 13 }}
-                    >
+                      style={{ padding: '6px 14px', fontSize: 13 }}>
                       Next →
                     </button>
                   </div>
@@ -602,7 +544,7 @@ function RecordsTab({ doctorId }) {
         </>
       )}
 
-      {/* Empty state — no patient selected */}
+      {/* Empty state */}
       {!selectedPatient && (
         <div style={{
           textAlign: 'center', padding: 40,
@@ -611,7 +553,7 @@ function RecordsTab({ doctorId }) {
           border: '1px solid #e5e7eb',
         }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🔍</div>
-          Search for a patient above to view or create their medical records.
+          Search for any registered patient above to view or create their medical records.
         </div>
       )}
     </div>
@@ -711,7 +653,7 @@ export default function DoctorDashboard() {
       setActionMsg('Appointment confirmed. Patient has been notified.')
       loadAppointments()
     } catch (err) {
-      setActionMsg(err.response?.data?.error || 'Failed to confirm.')
+      setActionMsg(err.response?.data?.error || 'Failed.')
     }
     setConfirmTarget(null)
   }
@@ -733,9 +675,9 @@ export default function DoctorDashboard() {
     const d = new Date(today); d.setDate(today.getDate() + i)
     return d.toISOString().split('T')[0]
   })
-  const scheduleAppointments = appointments.filter(a => next3Days.includes(a.date))
+  const scheduleAppts = appointments.filter(a => next3Days.includes(a.date))
 
-  const ActionButtons = ({ appointment: a }) => (
+  const ActionButtons = ({ a }) => (
     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
       {a.status === 'pending' && (
         <button className="btn-primary"
@@ -818,7 +760,7 @@ export default function DoctorDashboard() {
         {tab === 'Schedule' && (
           <div className="card">
             <div className="card-title">📆 Today & Next 3 Days</div>
-            {scheduleAppointments.length === 0 ? (
+            {scheduleAppts.length === 0 ? (
               <p style={{ color: '#9ca3af', fontWeight: 600, fontSize: 14 }}>
                 No upcoming appointments in the next 3 days.
               </p>
@@ -832,14 +774,14 @@ export default function DoctorDashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {scheduleAppointments.map(a => (
+                    {scheduleAppts.map(a => (
                       <tr key={a.id}>
                         <td>{a.date}</td>
                         <td>{a.time}</td>
                         <td>{a.patient_name}</td>
                         <td>{statusBadge(a.status)}</td>
                         <td>{a.notes || '—'}</td>
-                        <td><ActionButtons appointment={a} /></td>
+                        <td><ActionButtons a={a} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -849,7 +791,7 @@ export default function DoctorDashboard() {
           </div>
         )}
 
-        {/* Patients + Prescriptions */}
+        {/* Patients */}
         {tab === 'Patients' && (
           <div style={{
             display: 'grid',
@@ -933,7 +875,10 @@ export default function DoctorDashboard() {
                           fontSize: 12, color: '#374151', fontWeight: 'bold',
                           whiteSpace: 'pre-line', marginTop: 4,
                         }}>{p.medicines}</div>
-                        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6, fontWeight: 'bold' }}>
+                        <div style={{
+                          fontSize: 11, color: '#9ca3af',
+                          marginTop: 6, fontWeight: 'bold',
+                        }}>
                           {new Date(p.created_at).toLocaleDateString()}
                         </div>
                       </div>
@@ -945,12 +890,10 @@ export default function DoctorDashboard() {
           </div>
         )}
 
-        {/* Records tab — uses separate component */}
-        {tab === 'Records' && (
-          <RecordsTab doctorId={user?.user_id} />
-        )}
+        {/* Records */}
+        {tab === 'Records' && <RecordsTab />}
 
-        {/* All Appointments */}
+        {/* Appointments */}
         {tab === 'Appointments' && (
           <div className="card">
             <div className="card-title">📅 All My Appointments</div>
@@ -970,7 +913,7 @@ export default function DoctorDashboard() {
                       <td>{a.time}</td>
                       <td>{statusBadge(a.status)}</td>
                       <td>{a.notes || '—'}</td>
-                      <td><ActionButtons appointment={a} /></td>
+                      <td><ActionButtons a={a} /></td>
                     </tr>
                   ))}
                   {appointments.length === 0 && (
@@ -986,9 +929,7 @@ export default function DoctorDashboard() {
           </div>
         )}
 
-        {tab === 'Messages' && (
-          <MessagingPanel currentUserId={user?.user_id} />
-        )}
+        {tab === 'Messages' && <MessagingPanel currentUserId={user?.user_id} />}
       </main>
 
       {showLogout && (
