@@ -8,7 +8,6 @@ import ConfirmModal from '../components/ConfirmModal'
 import NotificationBell from '../components/NotificationBell'
 import MessagingPanel from '../components/MessagingPanel'
 
-// ── Debounce hook ──
 function useDebounce(value, delay) {
   const [debounced, setDebounced] = useState(value)
   useEffect(() => {
@@ -19,7 +18,7 @@ function useDebounce(value, delay) {
 }
 
 // ── Records Tab ──
-function RecordsTab() {
+function RecordsTab({ currentDoctorId }) {
   const [nameQuery, setNameQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searching, setSearching] = useState(false)
@@ -30,6 +29,8 @@ function RecordsTab() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [totalRecords, setTotalRecords] = useState(0)
+
+  // Create form
   const [showForm, setShowForm] = useState(false)
   const [diagnosis, setDiagnosis] = useState('')
   const [notes, setNotes] = useState('')
@@ -38,6 +39,19 @@ function RecordsTab() {
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState('')
   const [saveError, setSaveError] = useState('')
+
+  // Edit form
+  const [editingRecord, setEditingRecord] = useState(null)
+  const [editTitle, setEditTitle] = useState('')
+  const [editDiagnosis, setEditDiagnosis] = useState('')
+  const [editNotes, setEditNotes] = useState('')
+  const [editPrescription, setEditPrescription] = useState('')
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState('')
+
+  // Delete
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleting, setDeleting] = useState(false)
 
   const debouncedQuery = useDebounce(nameQuery, 500)
 
@@ -62,7 +76,7 @@ function RecordsTab() {
       if (results.length === 0) {
         setSearchError(`No patients found matching "${q}".`)
       }
-    } catch (err) {
+    } catch (_) {
       setSearchError('Search failed. Make sure the backend is running.')
     } finally {
       setSearching(false)
@@ -88,11 +102,18 @@ function RecordsTab() {
     setLoadingRecords(true)
     try {
       const res = await api.get(`/records/?patient_id=${patientId}&page=${page}`)
-      setRecords(res.data.results || [])
-      setTotalPages(res.data.total_pages || 1)
-      setTotalRecords(res.data.count || 0)
-      setCurrentPage(page)
-    } catch (err) {
+      const data = res.data
+      if (Array.isArray(data)) {
+        setRecords(data)
+        setTotalPages(1)
+        setTotalRecords(data.length)
+      } else {
+        setRecords(data.results || [])
+        setTotalPages(data.total_pages || 1)
+        setTotalRecords(data.count || 0)
+        setCurrentPage(page)
+      }
+    } catch (_) {
       setRecords([])
     } finally {
       setLoadingRecords(false)
@@ -125,13 +146,70 @@ function RecordsTab() {
       loadRecords(selectedPatient.id, 1)
     } catch (err) {
       const d = err.response?.data
-      if (typeof d === 'object') {
-        setSaveError(Object.values(d).flat().join(' '))
-      } else {
-        setSaveError('Failed to save. Please run: python manage.py makemigrations records && python manage.py migrate')
-      }
+      setSaveError(
+        typeof d === 'object'
+          ? Object.values(d).flat().join(' ')
+          : 'Failed to save. Please try again.'
+      )
     } finally {
       setSaving(false)
+    }
+  }
+
+  const openEdit = (record) => {
+    setEditingRecord(record)
+    setEditTitle(record.record_title)
+    setEditDiagnosis(record.diagnosis || '')
+    setEditNotes(record.notes || '')
+    setEditPrescription(record.prescription || '')
+    setEditError('')
+  }
+
+  const handleUpdate = async (e) => {
+    e.preventDefault()
+    if (!editingRecord) return
+    setEditSaving(true)
+    setEditError('')
+    try {
+      await api.put(`/records/${editingRecord.id}/update/`, {
+        record_title: editTitle.trim(),
+        diagnosis: editDiagnosis.trim(),
+        notes: editNotes.trim(),
+        prescription: editPrescription.trim(),
+      })
+      setEditingRecord(null)
+      setSaveSuccess('✅ Record updated successfully.')
+      loadRecords(selectedPatient.id, currentPage)
+    } catch (err) {
+      const d = err.response?.data
+      setEditError(
+        typeof d === 'object'
+          ? Object.values(d).flat().join(' ')
+          : 'Failed to update.'
+      )
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      await api.delete(`/records/${deleteTarget.id}/delete/`)
+      setDeleteTarget(null)
+      setSaveSuccess(`✅ Record "${deleteTarget.record_title}" deleted.`)
+      loadRecords(selectedPatient.id, currentPage)
+    } catch (err) {
+      const d = err.response?.data
+      setSaveError(
+        typeof d === 'object'
+          ? Object.values(d).flat().join(' ')
+          : 'Failed to delete.'
+      )
+      setDeleteTarget(null)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -144,6 +222,7 @@ function RecordsTab() {
     setSaveError('')
     setSearchError('')
     setSearchResults([])
+    setEditingRecord(null)
   }
 
   const inp = {
@@ -158,7 +237,7 @@ function RecordsTab() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-title">🔍 Search Any Registered Patient</div>
         <p style={{ fontSize: 12, color: '#6b7280', fontWeight: 600, marginBottom: 12 }}>
-          You can search and create records for any patient registered in the system.
+          Search and manage medical records for any registered patient.
         </p>
 
         <div style={{ position: 'relative' }}>
@@ -216,7 +295,7 @@ function RecordsTab() {
             </div>
           )}
 
-          {/* Dropdown results */}
+          {/* Dropdown */}
           {searchResults.length > 0 && !selectedPatient && (
             <div style={{
               position: 'absolute', left: 0, right: 100,
@@ -232,7 +311,6 @@ function RecordsTab() {
                 fontSize: 11, color: '#16a34a', fontWeight: 700,
               }}>
                 {searchResults.length} patient{searchResults.length !== 1 ? 's' : ''} found
-                — click to select
               </div>
               {searchResults.map(item => (
                 <div
@@ -273,9 +351,7 @@ function RecordsTab() {
                     fontSize: 11, color: '#16a34a', fontWeight: 700,
                     padding: '2px 8px', background: '#f0fdf4',
                     borderRadius: 999, border: '1px solid #bbf7d0',
-                  }}>
-                    Select ✓
-                  </span>
+                  }}>Select ✓</span>
                 </div>
               ))}
             </div>
@@ -315,7 +391,7 @@ function RecordsTab() {
         )}
       </div>
 
-      {/* Records + Create form — only shown after selecting a patient */}
+      {/* Records section */}
       {selectedPatient && (
         <>
           {saveSuccess && (
@@ -324,6 +400,14 @@ function RecordsTab() {
               <button onClick={() => setSaveSuccess('')}
                 style={{ float: 'right', background: 'none', border: 'none',
                   cursor: 'pointer', fontWeight: 700, color: '#065f46' }}>✕</button>
+            </div>
+          )}
+          {saveError && (
+            <div className="alert-error" style={{ marginBottom: 12 }}>
+              {saveError}
+              <button onClick={() => setSaveError('')}
+                style={{ float: 'right', background: 'none', border: 'none',
+                  cursor: 'pointer', fontWeight: 700, color: '#991b1b' }}>✕</button>
             </div>
           )}
 
@@ -339,7 +423,11 @@ function RecordsTab() {
                 </span>
               </div>
               <button
-                onClick={() => { setShowForm(!showForm); setSaveError('') }}
+                onClick={() => {
+                  setShowForm(!showForm)
+                  setSaveError('')
+                  setEditingRecord(null)
+                }}
                 className="btn-primary"
                 style={{ padding: '7px 16px', fontSize: 13 }}
               >
@@ -354,11 +442,13 @@ function RecordsTab() {
                 padding: 16, marginBottom: 20,
                 border: '1.5px solid #16a34a',
               }}>
-                <div style={{ fontWeight: 700, fontSize: 14, color: '#14532d', marginBottom: 14 }}>
-                  📝 New Record for {selectedPatient.first_name} {selectedPatient.last_name}
+                <div style={{
+                  fontWeight: 700, fontSize: 14,
+                  color: '#14532d', marginBottom: 14,
+                }}>
+                  📝 New Record for{' '}
+                  {selectedPatient.first_name} {selectedPatient.last_name}
                 </div>
-
-                {saveError && <div className="alert-error">{saveError}</div>}
 
                 <form onSubmit={handleSaveRecord}>
                   <div className="form-group">
@@ -374,9 +464,8 @@ function RecordsTab() {
                     <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
                       Diagnosis *
                     </label>
-                    <textarea style={{
-                      ...inp, minHeight: 80, resize: 'vertical',
-                    }} placeholder="Enter diagnosis…"
+                    <textarea style={{ ...inp, minHeight: 80, resize: 'vertical' }}
+                      placeholder="Enter diagnosis…"
                       value={diagnosis} required
                       onChange={e => setDiagnosis(e.target.value)} />
                   </div>
@@ -384,9 +473,8 @@ function RecordsTab() {
                     <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
                       Prescription
                     </label>
-                    <textarea style={{
-                      ...inp, minHeight: 80, resize: 'vertical',
-                    }} placeholder="Enter medicines / prescription…"
+                    <textarea style={{ ...inp, minHeight: 80, resize: 'vertical' }}
+                      placeholder="Enter medicines / prescription…"
                       value={prescription}
                       onChange={e => setPrescription(e.target.value)} />
                   </div>
@@ -394,13 +482,15 @@ function RecordsTab() {
                     <label style={{ fontWeight: 700, fontSize: 13, color: '#374151' }}>
                       Notes
                     </label>
-                    <textarea style={{
-                      ...inp, minHeight: 70, resize: 'vertical',
-                    }} placeholder="Additional notes or instructions…"
+                    <textarea style={{ ...inp, minHeight: 70, resize: 'vertical' }}
+                      placeholder="Additional notes…"
                       value={notes}
                       onChange={e => setNotes(e.target.value)} />
                   </div>
-                  <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 12, fontWeight: 600 }}>
+                  <div style={{
+                    fontSize: 11, color: '#9ca3af',
+                    marginBottom: 12, fontWeight: 600,
+                  }}>
                     🔒 All fields are encrypted before saving.
                   </div>
                   <button type="submit" disabled={saving}
@@ -412,18 +502,100 @@ function RecordsTab() {
               </div>
             )}
 
+            {/* Edit form modal */}
+            {editingRecord && (
+              <div className="modal-overlay">
+                <div className="modal" style={{ maxWidth: 520 }}>
+                  <h2>✏️ Edit Record</h2>
+                  <p style={{ color: '#6b7280', fontSize: 13, marginBottom: 16 }}>
+                    Editing: <strong>{editingRecord.record_title}</strong>
+                  </p>
+
+                  {editError && <div className="alert-error">{editError}</div>}
+
+                  <form onSubmit={handleUpdate}>
+                    <div className="form-group">
+                      <label style={{ fontWeight: 700, fontSize: 13 }}>Record Title</label>
+                      <input
+                        style={{
+                          width: '100%', padding: '10px 14px',
+                          border: '1.5px solid #e5e7eb', borderRadius: 8,
+                          fontSize: 14, color: '#000', fontWeight: 'bold', background: 'white',
+                        }}
+                        type="text"
+                        value={editTitle}
+                        onChange={e => setEditTitle(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label style={{ fontWeight: 700, fontSize: 13 }}>Diagnosis *</label>
+                      <textarea
+                        style={{
+                          width: '100%', padding: '10px 14px',
+                          border: '1.5px solid #e5e7eb', borderRadius: 8,
+                          fontSize: 14, color: '#000', fontWeight: 'bold',
+                          background: 'white', minHeight: 80, resize: 'vertical',
+                        }}
+                        value={editDiagnosis} required
+                        onChange={e => setEditDiagnosis(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label style={{ fontWeight: 700, fontSize: 13 }}>Prescription</label>
+                      <textarea
+                        style={{
+                          width: '100%', padding: '10px 14px',
+                          border: '1.5px solid #e5e7eb', borderRadius: 8,
+                          fontSize: 14, color: '#000', fontWeight: 'bold',
+                          background: 'white', minHeight: 70, resize: 'vertical',
+                        }}
+                        value={editPrescription}
+                        onChange={e => setEditPrescription(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label style={{ fontWeight: 700, fontSize: 13 }}>Notes</label>
+                      <textarea
+                        style={{
+                          width: '100%', padding: '10px 14px',
+                          border: '1.5px solid #e5e7eb', borderRadius: 8,
+                          fontSize: 14, color: '#000', fontWeight: 'bold',
+                          background: 'white', minHeight: 60, resize: 'vertical',
+                        }}
+                        value={editNotes}
+                        onChange={e => setEditNotes(e.target.value)}
+                      />
+                    </div>
+                    <div className="modal-actions">
+                      <button type="button" className="btn-secondary"
+                        onClick={() => setEditingRecord(null)}>
+                        Cancel
+                      </button>
+                      <button type="submit" className="btn-primary" disabled={editSaving}>
+                        {editSaving ? '⏳ Saving…' : '💾 Save Changes'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
             {/* Records list */}
             {loadingRecords ? (
-              <div style={{ textAlign: 'center', padding: 24, color: '#9ca3af', fontSize: 13, fontWeight: 600 }}>
-                Loading records…
+              <div style={{
+                textAlign: 'center', padding: 24,
+                color: '#9ca3af', fontSize: 13, fontWeight: 600,
+              }}>
+                ⏳ Loading records…
               </div>
             ) : records.length === 0 ? (
               <div style={{
-                textAlign: 'center', padding: 24, color: '#9ca3af',
-                fontSize: 13, fontWeight: 600, background: '#f9fafb',
-                borderRadius: 8, border: '1px dashed #e5e7eb',
+                textAlign: 'center', padding: 24,
+                color: '#9ca3af', fontSize: 13, fontWeight: 600,
+                background: '#f9fafb', borderRadius: 8,
+                border: '1px dashed #e5e7eb',
               }}>
-                No medical records yet for this patient.
+                No medical records yet.
                 <br />
                 <span style={{ fontSize: 12 }}>
                   Click "➕ Create Record" to add the first one.
@@ -431,87 +603,136 @@ function RecordsTab() {
               </div>
             ) : (
               <>
-                {records.map(r => (
-                  <div key={r.id} style={{
-                    border: '1px solid #e5e7eb', borderRadius: 8,
-                    padding: 14, marginBottom: 10, background: '#fafafa',
-                  }}>
-                    <div style={{
-                      display: 'flex', justifyContent: 'space-between',
-                      alignItems: 'center', marginBottom: 10,
-                      paddingBottom: 8, borderBottom: '1px solid #f0f0f0',
+                {records.map(r => {
+                  const isOwner = r.created_by === currentDoctorId
+                  return (
+                    <div key={r.id} style={{
+                      border: '1px solid #e5e7eb', borderRadius: 10,
+                      padding: 14, marginBottom: 12, background: '#fafafa',
                     }}>
-                      <span style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
-                        📄 {r.record_title}
-                      </span>
-                      <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600 }}>
-                        {new Date(r.created_at).toLocaleDateString('en-PH', {
-                          year: 'numeric', month: 'long', day: 'numeric',
-                        })}
-                      </span>
-                    </div>
-
-                    {r.diagnosis && (
-                      <div style={{ marginBottom: 8 }}>
-                        <div style={{
-                          fontSize: 10, color: '#16a34a', fontWeight: 700,
-                          textTransform: 'uppercase', marginBottom: 3,
-                        }}>Diagnosis</div>
-                        <div style={{
-                          fontSize: 13, color: '#000', fontWeight: 'bold',
-                          whiteSpace: 'pre-wrap', lineHeight: 1.6,
-                          background: 'white', padding: 8,
-                          borderRadius: 6, border: '1px solid #f0f0f0',
-                        }}>{r.diagnosis}</div>
-                      </div>
-                    )}
-
-                    {r.prescription && (
-                      <div style={{ marginBottom: 8 }}>
-                        <div style={{
-                          fontSize: 10, color: '#2563eb', fontWeight: 700,
-                          textTransform: 'uppercase', marginBottom: 3,
-                        }}>Prescription</div>
-                        <div style={{
-                          fontSize: 13, color: '#000', fontWeight: 'bold',
-                          whiteSpace: 'pre-wrap', lineHeight: 1.6,
-                          background: 'white', padding: 8,
-                          borderRadius: 6, border: '1px solid #f0f0f0',
-                        }}>{r.prescription}</div>
-                      </div>
-                    )}
-
-                    {r.notes && (
-                      <div>
-                        <div style={{
-                          fontSize: 10, color: '#9ca3af', fontWeight: 700,
-                          textTransform: 'uppercase', marginBottom: 3,
-                        }}>Notes</div>
-                        <div style={{
-                          fontSize: 13, color: '#000', fontWeight: 'bold',
-                          whiteSpace: 'pre-wrap', lineHeight: 1.6,
-                          background: 'white', padding: 8,
-                          borderRadius: 6, border: '1px solid #f0f0f0',
-                        }}>{r.notes}</div>
-                      </div>
-                    )}
-
-                    {/* Legacy data field */}
-                    {!r.diagnosis && r.data && (
+                      {/* Record header */}
                       <div style={{
-                        fontSize: 13, color: '#000', fontWeight: 'bold',
-                        whiteSpace: 'pre-wrap', lineHeight: 1.6,
-                      }}>{r.data}</div>
-                    )}
+                        display: 'flex', justifyContent: 'space-between',
+                        alignItems: 'flex-start', marginBottom: 10,
+                        paddingBottom: 8, borderBottom: '1px solid #f0f0f0',
+                      }}>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: 14, color: '#000' }}>
+                            📄 {r.record_title}
+                          </div>
+                          <div style={{
+                            fontSize: 11, color: '#9ca3af',
+                            fontWeight: 600, marginTop: 2,
+                          }}>
+                            Added by: {r.created_by_name}
+                            {isOwner && (
+                              <span style={{
+                                marginLeft: 6, background: '#f0fdf4',
+                                color: '#16a34a', fontSize: 10,
+                                fontWeight: 700, padding: '1px 6px',
+                                borderRadius: 999, border: '1px solid #bbf7d0',
+                              }}>
+                                You
+                              </span>
+                            )}
+                          </div>
+                        </div>
 
-                    <div style={{
-                      fontSize: 11, color: '#9ca3af',
-                      marginTop: 8, fontWeight: 600,
-                    }}>
-                      Added by: {r.created_by_name}
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <span style={{
+                            fontSize: 11, color: '#9ca3af', fontWeight: 600,
+                            background: '#f3f4f6', padding: '2px 8px',
+                            borderRadius: 999, marginRight: 4,
+                          }}>
+                            {new Date(r.created_at).toLocaleDateString('en-PH', {
+                              year: 'numeric', month: 'short', day: 'numeric',
+                            })}
+                          </span>
+
+                          {/* Edit and Delete — only for records this doctor created */}
+                          {isOwner && (
+                            <>
+                              <button
+                                onClick={() => openEdit(r)}
+                                style={{
+                                  padding: '4px 10px', fontSize: 12,
+                                  background: '#eff6ff', color: '#1d4ed8',
+                                  border: '1px solid #bfdbfe', borderRadius: 6,
+                                  cursor: 'pointer', fontWeight: 700,
+                                }}
+                              >
+                                ✏️ Edit
+                              </button>
+                              <button
+                                onClick={() => setDeleteTarget(r)}
+                                style={{
+                                  padding: '4px 10px', fontSize: 12,
+                                  background: '#fef2f2', color: '#dc2626',
+                                  border: '1px solid #fecaca', borderRadius: 6,
+                                  cursor: 'pointer', fontWeight: 700,
+                                }}
+                              >
+                                🗑️ Delete
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {r.diagnosis && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{
+                            fontSize: 10, color: '#16a34a', fontWeight: 700,
+                            textTransform: 'uppercase', marginBottom: 3,
+                          }}>Diagnosis</div>
+                          <div style={{
+                            fontSize: 13, color: '#000', fontWeight: 'bold',
+                            whiteSpace: 'pre-wrap', lineHeight: 1.6,
+                            background: 'white', padding: 8,
+                            borderRadius: 6, border: '1px solid #f0f0f0',
+                          }}>{r.diagnosis}</div>
+                        </div>
+                      )}
+
+                      {r.prescription && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{
+                            fontSize: 10, color: '#2563eb', fontWeight: 700,
+                            textTransform: 'uppercase', marginBottom: 3,
+                          }}>Prescription</div>
+                          <div style={{
+                            fontSize: 13, color: '#000', fontWeight: 'bold',
+                            whiteSpace: 'pre-wrap', lineHeight: 1.6,
+                            background: 'white', padding: 8,
+                            borderRadius: 6, border: '1px solid #f0f0f0',
+                          }}>{r.prescription}</div>
+                        </div>
+                      )}
+
+                      {r.notes && (
+                        <div>
+                          <div style={{
+                            fontSize: 10, color: '#9ca3af', fontWeight: 700,
+                            textTransform: 'uppercase', marginBottom: 3,
+                          }}>Notes</div>
+                          <div style={{
+                            fontSize: 13, color: '#000', fontWeight: 'bold',
+                            whiteSpace: 'pre-wrap', lineHeight: 1.6,
+                            background: 'white', padding: 8,
+                            borderRadius: 6, border: '1px solid #f0f0f0',
+                          }}>{r.notes}</div>
+                        </div>
+                      )}
+
+                      {!r.diagnosis && r.data && (
+                        <div style={{
+                          fontSize: 13, color: '#000', fontWeight: 'bold',
+                          whiteSpace: 'pre-wrap', lineHeight: 1.6,
+                        }}>{r.data}</div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
 
                 {/* Pagination */}
                 {totalPages > 1 && (
@@ -553,7 +774,36 @@ function RecordsTab() {
           border: '1px solid #e5e7eb',
         }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🔍</div>
-          Search for any registered patient above to view or create their medical records.
+          Search for any registered patient to view or manage their records.
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteTarget && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h2>🗑️ Delete Record</h2>
+            <p>
+              Are you sure you want to delete{' '}
+              <strong>"{deleteTarget.record_title}"</strong>?
+              <br />
+              <span style={{ color: '#dc2626', fontSize: 13, fontWeight: 700 }}>
+                This action cannot be undone.
+                The patient will be notified.
+              </span>
+            </p>
+            <div className="modal-actions">
+              <button className="btn-secondary"
+                onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </button>
+              <button className="btn-danger"
+                onClick={handleDelete}
+                disabled={deleting}>
+                {deleting ? '⏳ Deleting…' : '🗑️ Yes, Delete'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -802,7 +1052,7 @@ export default function DoctorDashboard() {
               <div className="card-title">👥 Assigned Patients</div>
               {patients.length === 0 ? (
                 <p style={{ color: '#9ca3af', fontWeight: 600, fontSize: 14 }}>
-                  No assigned patients yet.
+                  No patients yet.
                 </p>
               ) : (
                 patients.map(p => (
@@ -830,7 +1080,8 @@ export default function DoctorDashboard() {
             {selectedPatient && (
               <div className="card">
                 <div className="card-title">
-                  💊 Prescriptions — {selectedPatient.first_name} {selectedPatient.last_name}
+                  💊 Prescriptions —{' '}
+                  {selectedPatient.first_name} {selectedPatient.last_name}
                 </div>
                 {prescError && <div className="alert-error">{prescError}</div>}
                 {prescSuccess && <div className="alert-success">{prescSuccess}</div>}
@@ -890,8 +1141,10 @@ export default function DoctorDashboard() {
           </div>
         )}
 
-        {/* Records */}
-        {tab === 'Records' && <RecordsTab />}
+        {/* Records tab */}
+        {tab === 'Records' && (
+          <RecordsTab currentDoctorId={user?.user_id} />
+        )}
 
         {/* Appointments */}
         {tab === 'Appointments' && (
@@ -929,7 +1182,9 @@ export default function DoctorDashboard() {
           </div>
         )}
 
-        {tab === 'Messages' && <MessagingPanel currentUserId={user?.user_id} />}
+        {tab === 'Messages' && (
+          <MessagingPanel currentUserId={user?.user_id} />
+        )}
       </main>
 
       {showLogout && (

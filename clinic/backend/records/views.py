@@ -55,7 +55,7 @@ class CreatePrescriptionView(APIView):
             try:
                 send_notification(
                     prescription.patient,
-                    f'Dr. {request.user.get_full_name()} added a new prescription for you.',
+                    f'Dr. {request.user.get_full_name()} added a new prescription.',
                     notif_type='new_prescription',
                     extra={'prescription_id': prescription.id},
                 )
@@ -69,23 +69,12 @@ class CreatePrescriptionView(APIView):
 
 
 class MedicalRecordListView(APIView):
-    """
-    Returns paginated medical records.
-
-    RULES:
-    - Patient: sees only their own records
-    - Doctor: can view records of ANY registered patient
-              (no appointment restriction)
-    - Admin:  can view records of ANY patient
-              but ONLY after searching and selecting a patient
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
         page = int(request.query_params.get('page', 1))
 
-        # ── PATIENT ──
         if user.role == 'patient':
             qs = MedicalRecord.objects.filter(
                 patient=user
@@ -99,9 +88,6 @@ class MedicalRecordListView(APIView):
             except Exception:
                 pass
 
-        # ── DOCTOR ──
-        # Doctor can view records of ANY patient in the system
-        # No appointment restriction
         elif user.role == 'doctor':
             patient_id = request.query_params.get('patient_id')
             if not patient_id:
@@ -109,22 +95,16 @@ class MedicalRecordListView(APIView):
                     {'error': 'patient_id is required.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-
-            # Verify the patient exists
             try:
-                patient = CustomUser.objects.get(
-                    pk=patient_id, role='patient'
-                )
+                patient = CustomUser.objects.get(pk=patient_id, role='patient')
             except CustomUser.DoesNotExist:
                 return Response(
                     {'error': 'Patient not found.'},
                     status=status.HTTP_404_NOT_FOUND,
                 )
-
             qs = MedicalRecord.objects.filter(
                 patient=patient
             ).select_related('patient', 'created_by')
-
             try:
                 MedicalRecordAuditLog.objects.create(
                     accessed_by=user,
@@ -134,9 +114,6 @@ class MedicalRecordListView(APIView):
             except Exception:
                 pass
 
-        # ── ADMIN ──
-        # Admin can view records of any patient
-        # but must select a patient first (patient_user_id required)
         elif user.role == 'admin':
             patient_user_id = request.query_params.get('patient_user_id')
             if not patient_user_id:
@@ -147,11 +124,9 @@ class MedicalRecordListView(APIView):
                     'current_page': 1,
                     'message': 'Search for a patient to view their records.',
                 })
-
             qs = MedicalRecord.objects.filter(
                 patient_id=patient_user_id
             ).select_related('patient', 'created_by')
-
             try:
                 MedicalRecordAuditLog.objects.create(
                     accessed_by=user,
@@ -160,14 +135,11 @@ class MedicalRecordListView(APIView):
                 )
             except Exception:
                 pass
-
         else:
             return Response({'error': 'Unauthorized.'}, status=403)
 
-        # Paginate
         paginator = Paginator(qs, PAGE_SIZE)
         total_pages = paginator.num_pages
-
         try:
             page_obj = paginator.page(page)
         except Exception:
@@ -185,24 +157,14 @@ class MedicalRecordListView(APIView):
 
 
 class CreateMedicalRecordView(APIView):
-    """
-    RULES:
-    - Doctor: can create records for ANY registered patient
-              No appointment needed
-    - Admin:  STRICTLY READ-ONLY — cannot create records
-    - Patient: cannot create records
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # Admin is strictly read-only
         if request.user.role == 'admin':
             return Response(
                 {'error': 'Admins cannot create records. View only.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
-        # Only doctors can create
         if request.user.role != 'doctor':
             return Response(
                 {'error': 'Only doctors can create medical records.'},
@@ -215,7 +177,6 @@ class CreateMedicalRecordView(APIView):
         notes = request.data.get('notes', '').strip()
         prescription = request.data.get('prescription', '').strip()
 
-        # Validate required fields
         if not patient_id:
             return Response(
                 {'error': 'Patient is required.'},
@@ -227,16 +188,14 @@ class CreateMedicalRecordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Find patient — must be registered as a patient
         try:
             patient = CustomUser.objects.get(pk=patient_id, role='patient')
         except CustomUser.DoesNotExist:
             return Response(
-                {'error': 'Patient not found in the system.'},
+                {'error': 'Patient not found.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Create and encrypt the record
         try:
             record = MedicalRecord(
                 patient=patient,
@@ -249,14 +208,12 @@ class CreateMedicalRecordView(APIView):
             if prescription:
                 record.set_prescription(prescription)
             record.save()
-
         except Exception as e:
             return Response(
-                {'error': f'Failed to save record. Please run migrations. Detail: {str(e)}'},
+                {'error': f'Failed to save: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        # Audit log — failure does not block save
         try:
             MedicalRecordAuditLog.objects.create(
                 record=record,
@@ -267,11 +224,10 @@ class CreateMedicalRecordView(APIView):
         except Exception:
             pass
 
-        # Notify patient — failure does not block save
         try:
             send_notification(
                 patient,
-                f'Dr. {request.user.get_full_name()} has added a new medical record for you.',
+                f'Dr. {request.user.get_full_name()} added a new medical record for you.',
                 notif_type='new_record',
                 extra={'record_id': record.id},
             )
@@ -284,8 +240,149 @@ class CreateMedicalRecordView(APIView):
         )
 
 
+class UpdateMedicalRecordView(APIView):
+    """Doctor can edit a record they created."""
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, pk):
+        if request.user.role != 'doctor':
+            return Response(
+                {'error': 'Only doctors can edit records.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            record = MedicalRecord.objects.get(pk=pk)
+        except MedicalRecord.DoesNotExist:
+            return Response(
+                {'error': 'Record not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Doctor can only edit records they created
+        if record.created_by != request.user:
+            return Response(
+                {'error': 'You can only edit records you created.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        record_title = request.data.get('record_title', '').strip()
+        diagnosis = request.data.get('diagnosis', '').strip()
+        notes = request.data.get('notes', '').strip()
+        prescription = request.data.get('prescription', '').strip()
+
+        if not diagnosis:
+            return Response(
+                {'error': 'Diagnosis is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            if record_title:
+                record.record_title = record_title
+            record.set_diagnosis(diagnosis)
+            record.set_notes(notes)
+            record.set_prescription(prescription)
+            record.save()
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to update: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        try:
+            MedicalRecordAuditLog.objects.create(
+                record=record,
+                accessed_by=request.user,
+                action='update',
+                notes=f'Dr. {request.user.get_full_name()} updated record {record.record_title}',
+            )
+        except Exception:
+            pass
+
+        try:
+            send_notification(
+                record.patient,
+                f'Dr. {request.user.get_full_name()} updated your medical record: {record.record_title}.',
+                notif_type='record_updated',
+                extra={'record_id': record.id},
+            )
+        except Exception:
+            pass
+
+        return Response(MedicalRecordSerializer(record).data)
+
+
+class DeleteMedicalRecordView(APIView):
+    """
+    Doctor can delete a record they created.
+    Admin cannot delete — read only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        # Admin cannot delete
+        if request.user.role == 'admin':
+            return Response(
+                {'error': 'Admins cannot delete records.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if request.user.role != 'doctor':
+            return Response(
+                {'error': 'Only doctors can delete records.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            record = MedicalRecord.objects.get(pk=pk)
+        except MedicalRecord.DoesNotExist:
+            return Response(
+                {'error': 'Record not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Doctor can only delete records they created
+        if record.created_by != request.user:
+            return Response(
+                {'error': 'You can only delete records you created.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        patient = record.patient
+        record_title = record.record_title
+
+        # Log before deleting
+        try:
+            MedicalRecordAuditLog.objects.create(
+                record=None,
+                accessed_by=request.user,
+                action='delete',
+                notes=f'Dr. {request.user.get_full_name()} deleted record '
+                      f'"{record_title}" for patient {patient.get_full_name()}',
+            )
+        except Exception:
+            pass
+
+        # Notify patient
+        try:
+            send_notification(
+                patient,
+                f'Dr. {request.user.get_full_name()} removed a medical record: {record_title}.',
+                notif_type='record_deleted',
+                extra={},
+            )
+        except Exception:
+            pass
+
+        record.delete()
+
+        return Response({
+            'message': f'Record "{record_title}" deleted successfully.'
+        }, status=status.HTTP_200_OK)
+
+
 class AuditLogListView(APIView):
-    """Admin only — view audit logs."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
