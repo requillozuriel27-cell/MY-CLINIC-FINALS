@@ -17,15 +17,24 @@ class PrescriptionSerializer(serializers.ModelSerializer):
         read_only_fields = ['doctor', 'created_at', 'updated_at']
 
     def get_doctor_name(self, obj):
-        return obj.doctor.get_full_name()
+        try:
+            return obj.doctor.get_full_name()
+        except Exception:
+            return ''
 
     def get_patient_name(self, obj):
-        return obj.patient.get_full_name()
+        try:
+            return obj.patient.get_full_name()
+        except Exception:
+            return ''
 
     def get_doctor_specialization(self, obj):
-        if hasattr(obj.doctor, 'doctor_profile'):
-            return obj.doctor.doctor_profile.specialization
-        return ''
+        try:
+            if hasattr(obj.doctor, 'doctor_profile'):
+                return obj.doctor.doctor_profile.specialization
+            return ''
+        except Exception:
+            return ''
 
 
 class CreatePrescriptionSerializer(serializers.ModelSerializer):
@@ -41,7 +50,6 @@ class MedicalRecordSerializer(serializers.ModelSerializer):
     diagnosis = serializers.SerializerMethodField()
     notes = serializers.SerializerMethodField()
     prescription = serializers.SerializerMethodField()
-    # Keep data for backward compat with old records
     data = serializers.SerializerMethodField()
 
     class Meta:
@@ -54,15 +62,27 @@ class MedicalRecordSerializer(serializers.ModelSerializer):
         read_only_fields = ['patient', 'created_by', 'created_at']
 
     def get_patient_name(self, obj):
-        return obj.patient.get_full_name()
+        try:
+            return obj.patient.get_full_name()
+        except Exception:
+            return ''
 
     def get_patient_id_number(self, obj):
-        if hasattr(obj.patient, 'patient_profile'):
-            return obj.patient.patient_profile.patient_id
-        return None
+        # Safe — handles missing profile and missing patient_id field
+        try:
+            profile = getattr(obj.patient, 'patient_profile', None)
+            if profile is None:
+                return None
+            # Use getattr with default None so it never crashes
+            return getattr(profile, 'patient_id', None)
+        except Exception:
+            return None
 
     def get_created_by_name(self, obj):
-        return obj.created_by.get_full_name() if obj.created_by else ''
+        try:
+            return obj.created_by.get_full_name() if obj.created_by else ''
+        except Exception:
+            return ''
 
     def get_diagnosis(self, obj):
         try:
@@ -83,7 +103,7 @@ class MedicalRecordSerializer(serializers.ModelSerializer):
             return ''
 
     def get_data(self, obj):
-        # Legacy field for old records
+        # Legacy field for old records created before the new fields
         try:
             return obj.get_data()
         except Exception:
@@ -103,7 +123,13 @@ class AuditLogSerializer(serializers.ModelSerializer):
         ]
 
     def get_accessed_by_name(self, obj):
-        return obj.accessed_by.get_full_name() if obj.accessed_by else 'Unknown'
+        try:
+            return obj.accessed_by.get_full_name() if obj.accessed_by else 'Unknown'
+        except Exception:
+            return 'Unknown'
 
     def get_record_title(self, obj):
-        return obj.record.record_title if obj.record else '—'
+        try:
+            return obj.record.record_title if obj.record else '—'
+        except Exception:
+            return '—'
