@@ -7,7 +7,7 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-dev-key-change-in-production')
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-dev-key')
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 ALLOWED_HOSTS = ['*']
 
@@ -40,6 +40,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Custom rate limiting middleware
+    'clinic.middleware.RateLimitMiddleware',
 ]
 
 ROOT_URLCONF = 'clinic.urls'
@@ -76,6 +78,25 @@ CHANNEL_LAYERS = {
     }
 }
 
+# Cache — used for rate limiting
+# Uses file-based cache so it survives server restarts
+# No Redis needed
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
+        'LOCATION': BASE_DIR / 'cache',
+        'TIMEOUT': 300,
+        'OPTIONS': {
+            'MAX_ENTRIES': 10000,
+        }
+    }
+}
+
+# Rate Limiting Settings
+RATE_LIMIT_REQUESTS = 100      # max requests
+RATE_LIMIT_WINDOW = 60         # per 60 seconds
+RATE_LIMIT_EMAIL_REQUESTS = 5  # admin email sending: max 5 per minute
+
 AUTH_USER_MODEL = 'accounts.CustomUser'
 
 REST_FRAMEWORK = {
@@ -102,19 +123,22 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = [
-    'accept',
-    'accept-encoding',
-    'authorization',
-    'content-type',
-    'dnt',
-    'origin',
-    'user-agent',
-    'x-csrftoken',
-    'x-requested-with',
+    'accept', 'accept-encoding', 'authorization',
+    'content-type', 'dnt', 'origin', 'user-agent',
+    'x-csrftoken', 'x-requested-with',
 ]
 
 FERNET_KEY = os.environ.get('FERNET_KEY', '')
 ADMIN_SPECIAL_CODE = os.environ.get('ADMIN_SPECIAL_CODE', 'CLINIC2024')
+
+# Gmail Email Settings
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = f'Poblacion Danao Bohol Clinic <{os.environ.get("EMAIL_HOST_USER", "")}>'
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
@@ -124,7 +148,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Manila'
 USE_I18N = True
 USE_TZ = True
 
