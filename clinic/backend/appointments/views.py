@@ -1,46 +1,57 @@
-from rest_framework import status, generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.shortcuts import get_object_or_404
+from rest_framework import status
 from django.db.models import Q
 
 from .models import Appointment
-from .serializers import AppointmentSerializer, CreateAppointmentSerializer
+from .serializers import AppointmentSerializer
 from accounts.models import CustomUser
 from notifications.utils import send_notification
+from clinic.email_service import (
+    send_appointment_booked_patient,
+    send_appointment_booked_doctor,
+    send_appointment_confirmed,
+    send_appointment_cancelled_patient,
+    send_appointment_cancelled_doctor,
+)
 
 
-class AppointmentListView(generics.ListAPIView):
+class AppointmentListView(APIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = AppointmentSerializer
 
-    def get_queryset(self):
-        user = self.request.user
-        status_filter = self.request.query_params.get('status', None)
-        search = self.request.query_params.get('search', None)
+    def get(self, request):
+        user = request.user
+        search = request.query_params.get('search', '').strip()
+        status_filter = request.query_params.get('status', '').strip()
 
         if user.role == 'patient':
-            qs = Appointment.objects.filter(patient=user)
+            qs = Appointment.objects.filter(
+                patient=user
+            ).select_related('patient', 'doctor')
         elif user.role == 'doctor':
-            qs = Appointment.objects.filter(doctor=user)
+            qs = Appointment.objects.filter(
+                doctor=user
+            ).select_related('patient', 'doctor')
         elif user.role == 'admin':
-            qs = Appointment.objects.all()
+            qs = Appointment.objects.all().select_related('patient', 'doctor')
         else:
-            return Appointment.objects.none()
+            qs = Appointment.objects.none()
 
-        if status_filter:
-            qs = qs.filter(status=status_filter)
         if search:
             qs = qs.filter(
-                Q(patient__username__icontains=search) |
                 Q(patient__first_name__icontains=search) |
                 Q(patient__last_name__icontains=search) |
-                Q(doctor__username__icontains=search) |
+                Q(patient__username__icontains=search) |
                 Q(doctor__first_name__icontains=search) |
                 Q(doctor__last_name__icontains=search)
             )
-        return qs.select_related('patient', 'doctor').order_by('-date', '-time')
+
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        serializer = AppointmentSerializer(qs.order_by('-date', '-time'), many=True)
+        return Response(serializer.data)
 
 
 class BookAppointmentView(APIView):
@@ -53,132 +64,81 @@ class BookAppointmentView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        serializer = CreateAppointmentSerializer(data=request.data)
-        if serializer.is_valid():
-            appointment = serializer.save(patient=request.user, status='pending')
+        doctor_id = request.data.get('doctor')
+        date = request.data.get('date')
+        time = request.data.get('time')
+        notes = request.data.get('notes', '')
 
-            # Notify doctor about new booking
+        if not all([doctor_id, date, time]):
+            return Response(
+                {'error': 'Doctor, date and time are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            doctor = CustomUser.objects.get(pk=doctor_id, role='doctor')
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Doctor not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        appointment = Appointment.objects.create(
+            patient=request.user,
+            doctor=doctor,
+            date=date,
+            time=time,
+            notes=notes,
+            status='pending',
+        )
+
+        # In-app notifications
+        try:
             send_notification(
-                appointment.doctor,
-                f'New appointment booked by {appointment.patient.get_full_name()} '
-                f'on {appointment.date} at {appointment.time}. Please confirm or cancel.',
+                doctor,
+                f'{request.user.get_full_name()} booked an appointment on {date} at {time}.',
                 notif_type='new_appointment',
                 extra={'appointment_id': appointment.id},
             )
+        except Exception:
+            pass
 
-            return Response(
-                AppointmentSerializer(appointment).data,
-                status=status.HTTP_201_CREATED,
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Email notifications — patient and doctor
+        try:
+            send_appointment_booked_patient(request.user, doctor, date, time)
+        except Exception:
+            pass
 
+        try:
+            send_appointment_booked_doctor(doctor, request.user, date, time)
+        except Exception:
+            pass
 
-class ConfirmAppointmentView(APIView):
-    """Doctor or admin confirms a pending appointment."""
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, pk):
-        appointment = get_object_or_404(Appointment, pk=pk)
-        user = request.user
-
-        # Only doctor assigned or admin can confirm
-        if user.role == 'doctor' and appointment.doctor != user:
-            return Response({'error': 'Unauthorized.'}, status=status.HTTP_403_FORBIDDEN)
-        if user.role == 'patient':
-            return Response({'error': 'Patients cannot confirm appointments.'}, status=status.HTTP_403_FORBIDDEN)
-
-        if appointment.status == 'cancelled':
-            return Response(
-                {'error': 'Cannot confirm a cancelled appointment.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if appointment.status == 'confirmed':
-            return Response(
-                {'error': 'Appointment is already confirmed.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        appointment.status = 'confirmed'
-        appointment.save()
-
-        # Notify patient
-        send_notification(
-            appointment.patient,
-            f'Your appointment with Dr. {appointment.doctor.get_full_name()} '
-            f'on {appointment.date} at {appointment.time} has been CONFIRMED.',
-            notif_type='appointment_confirmed',
-            extra={'appointment_id': appointment.id},
-        )
-
-        return Response(
-            {'message': 'Appointment confirmed.',
-             'appointment': AppointmentSerializer(appointment).data}
-        )
-
-
-class UpdateAppointmentStatusView(APIView):
-    """Admin can set any status on any appointment."""
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, pk):
-        if request.user.role != 'admin':
-            return Response({'error': 'Only admins can update status directly.'}, status=403)
-
-        appointment = get_object_or_404(Appointment, pk=pk)
-        new_status = request.data.get('status', '').strip()
-
-        valid = ['pending', 'confirmed', 'cancelled', 'completed']
-        if new_status not in valid:
-            return Response(
-                {'error': f'Status must be one of: {", ".join(valid)}'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        old_status = appointment.status
-        appointment.status = new_status
-        appointment.save()
-
-        patient = appointment.patient
-        doctor = appointment.doctor
-
-        # Notify both parties of the status change
-        send_notification(
-            patient,
-            f'Your appointment with Dr. {doctor.get_full_name()} on {appointment.date} '
-            f'has been updated to {new_status.upper()} by admin.',
-            notif_type='status_update',
-            extra={'appointment_id': appointment.id},
-        )
-        send_notification(
-            doctor,
-            f'Appointment with {patient.get_full_name()} on {appointment.date} '
-            f'has been updated to {new_status.upper()} by admin.',
-            notif_type='status_update',
-            extra={'appointment_id': appointment.id},
-        )
-
-        return Response(
-            {'message': f'Status updated to {new_status}.',
-             'appointment': AppointmentSerializer(appointment).data}
-        )
+        serializer = AppointmentSerializer(appointment)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class CancelAppointmentView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        appointment = get_object_or_404(Appointment, pk=pk)
+        try:
+            appointment = Appointment.objects.get(pk=pk)
+        except Appointment.DoesNotExist:
+            return Response({'error': 'Not found.'}, status=404)
+
         user = request.user
 
+        # Permission check
         if user.role == 'patient' and appointment.patient != user:
-            return Response({'error': 'Unauthorized.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'error': 'Unauthorized.'}, status=403)
         if user.role == 'doctor' and appointment.doctor != user:
-            return Response({'error': 'Unauthorized.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'error': 'Unauthorized.'}, status=403)
 
-        if appointment.status == 'cancelled':
+        if appointment.status in ('cancelled', 'completed'):
             return Response(
-                {'error': 'Appointment is already cancelled.'},
-                status=status.HTTP_400_BAD_REQUEST,
+                {'error': f'Cannot cancel a {appointment.status} appointment.'},
+                status=400,
             )
 
         appointment.status = 'cancelled'
@@ -186,64 +146,122 @@ class CancelAppointmentView(APIView):
 
         patient = appointment.patient
         doctor = appointment.doctor
-        date_str = str(appointment.date)
-        time_str = str(appointment.time)
+        date = str(appointment.date)
+        time = str(appointment.time)
 
-        if user.role == 'admin':
-            send_notification(
-                patient,
-                f'Your appointment with Dr. {doctor.get_full_name()} on {date_str} at {time_str} was cancelled by admin.',
-                notif_type='cancellation',
-                extra={'appointment_id': appointment.id},
-            )
-            send_notification(
-                doctor,
-                f'Appointment with {patient.get_full_name()} on {date_str} at {time_str} was cancelled by admin.',
-                notif_type='cancellation',
-                extra={'appointment_id': appointment.id},
-            )
+        cancelled_by = user.role
 
-        elif user.role == 'doctor':
-            send_notification(
-                patient,
-                f'Your appointment with Dr. {doctor.get_full_name()} on {date_str} at {time_str} was cancelled by the doctor.',
-                notif_type='cancellation',
-                extra={'appointment_id': appointment.id},
-            )
-
-        elif user.role == 'patient':
-            send_notification(
-                doctor,
-                f'Appointment with {patient.get_full_name()} on {date_str} at {time_str} was cancelled by the patient.',
-                notif_type='cancellation',
-                extra={'appointment_id': appointment.id},
-            )
-            admins = CustomUser.objects.filter(role='admin', is_active=True)
-            for admin in admins:
+        # In-app notifications
+        try:
+            if cancelled_by == 'patient':
                 send_notification(
-                    admin,
-                    f'Appointment between Dr. {doctor.get_full_name()} and {patient.get_full_name()} on {date_str} was cancelled by patient.',
-                    notif_type='cancellation',
+                    doctor,
+                    f'{patient.get_full_name()} cancelled their appointment on {date}.',
+                    notif_type='appointment_cancelled',
                     extra={'appointment_id': appointment.id},
                 )
+            else:
+                send_notification(
+                    patient,
+                    f'Dr. {doctor.get_full_name()} cancelled your appointment on {date}.',
+                    notif_type='appointment_cancelled',
+                    extra={'appointment_id': appointment.id},
+                )
+        except Exception:
+            pass
 
-        return Response(
-            {'message': 'Appointment cancelled.',
-             'appointment': AppointmentSerializer(appointment).data}
-        )
+        # Email notifications
+        try:
+            send_appointment_cancelled_patient(
+                patient, doctor, date, time, cancelled_by
+            )
+        except Exception:
+            pass
+
+        if cancelled_by == 'patient':
+            try:
+                send_appointment_cancelled_doctor(doctor, patient, date, time)
+            except Exception:
+                pass
+
+        return Response({'message': 'Appointment cancelled.'})
 
 
-class AppointmentDetailView(generics.RetrieveAPIView):
+class ConfirmAppointmentView(APIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = AppointmentSerializer
 
-    def get_queryset(self):
-        user = self.request.user
-        if user.role == 'admin':
-            return Appointment.objects.all()
-        elif user.role == 'doctor':
-            return Appointment.objects.filter(doctor=user)
-        return Appointment.objects.filter(patient=user)
+    def post(self, request, pk):
+        try:
+            appointment = Appointment.objects.get(pk=pk)
+        except Appointment.DoesNotExist:
+            return Response({'error': 'Not found.'}, status=404)
+
+        user = request.user
+
+        if user.role not in ('doctor', 'admin'):
+            return Response({'error': 'Only doctors or admin can confirm.'}, status=403)
+
+        if user.role == 'doctor' and appointment.doctor != user:
+            return Response({'error': 'Unauthorized.'}, status=403)
+
+        if appointment.status != 'pending':
+            return Response(
+                {'error': f'Cannot confirm a {appointment.status} appointment.'},
+                status=400,
+            )
+
+        appointment.status = 'confirmed'
+        appointment.save()
+
+        patient = appointment.patient
+        doctor = appointment.doctor
+        date = str(appointment.date)
+        time = str(appointment.time)
+
+        # In-app notification
+        try:
+            send_notification(
+                patient,
+                f'Your appointment with Dr. {doctor.get_full_name()} on {date} is confirmed.',
+                notif_type='appointment_confirmed',
+                extra={'appointment_id': appointment.id},
+            )
+        except Exception:
+            pass
+
+        # Email notification
+        try:
+            send_appointment_confirmed(patient, doctor, date, time)
+        except Exception:
+            pass
+
+        return Response({'message': 'Appointment confirmed.'})
+
+
+class UpdateAppointmentStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if request.user.role != 'admin':
+            return Response({'error': 'Admin only.'}, status=403)
+
+        try:
+            appointment = Appointment.objects.get(pk=pk)
+        except Appointment.DoesNotExist:
+            return Response({'error': 'Not found.'}, status=404)
+
+        new_status = request.data.get('status')
+        valid = ['pending', 'confirmed', 'cancelled', 'completed']
+        if new_status not in valid:
+            return Response(
+                {'error': f'Status must be one of: {", ".join(valid)}'},
+                status=400,
+            )
+
+        appointment.status = new_status
+        appointment.save()
+
+        return Response({'message': f'Status updated to {new_status}.'})
 
 
 class AppointmentStatsView(APIView):
@@ -251,15 +269,23 @@ class AppointmentStatsView(APIView):
 
     def get(self, request):
         if request.user.role != 'admin':
-            return Response({'error': 'Unauthorized.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'error': 'Admin only.'}, status=403)
 
-        from accounts.models import CustomUser as User
+        total = Appointment.objects.count()
+        pending = Appointment.objects.filter(status='pending').count()
+        confirmed = Appointment.objects.filter(status='confirmed').count()
+        cancelled = Appointment.objects.filter(status='cancelled').count()
+        completed = Appointment.objects.filter(status='completed').count()
+
+        total_patients = CustomUser.objects.filter(role='patient', is_active=True).count()
+        total_doctors = CustomUser.objects.filter(role='doctor', is_active=True).count()
+
         return Response({
-            'total_patients': User.objects.filter(role='patient', is_active=True).count(),
-            'total_doctors': User.objects.filter(role='doctor', is_active=True).count(),
-            'total_appointments': Appointment.objects.count(),
-            'pending': Appointment.objects.filter(status='pending').count(),
-            'confirmed': Appointment.objects.filter(status='confirmed').count(),
-            'cancelled': Appointment.objects.filter(status='cancelled').count(),
-            'completed': Appointment.objects.filter(status='completed').count(),
+            'total_appointments': total,
+            'pending': pending,
+            'confirmed': confirmed,
+            'cancelled': cancelled,
+            'completed': completed,
+            'total_patients': total_patients,
+            'total_doctors': total_doctors,
         })

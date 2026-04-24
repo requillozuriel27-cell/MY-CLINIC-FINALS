@@ -7,8 +7,8 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-dev-key')
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-dev-key')
+DEBUG = os.getenv('DEBUG', 'True') == 'True'
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
@@ -40,7 +40,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    # Custom rate limiting middleware
     'clinic.middleware.RateLimitMiddleware',
 ]
 
@@ -78,9 +77,6 @@ CHANNEL_LAYERS = {
     }
 }
 
-# Cache — used for rate limiting
-# Uses file-based cache so it survives server restarts
-# No Redis needed
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
@@ -92,10 +88,8 @@ CACHES = {
     }
 }
 
-# Rate Limiting Settings
-RATE_LIMIT_REQUESTS = 100      # max requests
-RATE_LIMIT_WINDOW = 60         # per 60 seconds
-RATE_LIMIT_EMAIL_REQUESTS = 5  # admin email sending: max 5 per minute
+RATE_LIMIT_REQUESTS = 100
+RATE_LIMIT_WINDOW = 60
 
 AUTH_USER_MODEL = 'accounts.CustomUser'
 
@@ -128,17 +122,24 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken', 'x-requested-with',
 ]
 
-FERNET_KEY = os.environ.get('FERNET_KEY', '')
-ADMIN_SPECIAL_CODE = os.environ.get('ADMIN_SPECIAL_CODE', 'CLINIC2024')
+FERNET_KEY = os.getenv('FERNET_KEY', '')
+ADMIN_SPECIAL_CODE = os.getenv('ADMIN_SPECIAL_CODE', 'CLINIC2024')
 
-# Gmail Email Settings
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = f'Poblacion Danao Bohol Clinic <{os.environ.get("EMAIL_HOST_USER", "")}>'
+# ── Gmail Email Settings ──
+# All values read from .env — never hardcoded
+EMAIL_BACKEND = os.getenv(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.smtp.EmailBackend'
+)
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv(
+    'DEFAULT_FROM_EMAIL',
+    f'Poblacion Danao Bohol Clinic <{os.getenv("EMAIL_HOST_USER", "")}>'
+)
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},

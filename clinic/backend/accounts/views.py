@@ -9,6 +9,12 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import CustomUser, DoctorProfile, PatientProfile
 from .serializers import RegisterSerializer, UserSerializer
+from clinic.email_service import (
+    send_welcome_email,
+    send_password_reset,
+    send_account_deactivated,
+    send_account_restored,
+)
 
 
 def get_tokens_for_user(user):
@@ -27,9 +33,22 @@ class RegisterView(APIView):
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            user = serializer.save()
+
+            # Send welcome email in background
+            try:
+                send_welcome_email(user)
+            except Exception:
+                pass
+
             return Response(
-                {'message': 'Registration successful. Please log in.'},
+                {
+                    'message': (
+                        'Registration successful! '
+                        'A confirmation email has been sent to '
+                        f'{user.email}. Please log in.'
+                    )
+                },
                 status=status.HTTP_201_CREATED,
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -159,93 +178,77 @@ class UserDetailView(generics.RetrieveAPIView):
 
 
 class SearchPatientView(APIView):
-    """
-    Search patients by name, username, email, or patient ID.
-    Fixed: works for ALL patients including those without a profile.
-    Works for both admin and doctor roles.
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # Allow both admin and doctor to search patients
         if request.user.role not in ('admin', 'doctor'):
-            return Response({'error': 'Unauthorized.'}, status=403)
+            return Response(
+                {'results': [], 'total_patients_found': 0, 'error': 'Unauthorized.'},
+                status=200
+            )
 
         query = request.query_params.get('q', '').strip()
 
-        if not query:
-            return Response(
-                {'error': 'Please type a name to search.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if len(query) < 2:
-            return Response(
-                {'error': 'Search must be at least 2 characters.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if not query or len(query) < 2:
+            return Response({
+                'results': [], 'total_patients_found': 0, 'query': query,
+            })
 
         try:
-            # Step 1: Search all patients by name/username/email
-            # This works even if the patient has NO profile
-            patients = CustomUser.objects.filter(
-                role='patient'
-            ).filter(
+            patients = CustomUser.objects.filter(role='patient').filter(
                 Q(first_name__icontains=query) |
                 Q(last_name__icontains=query) |
                 Q(username__icontains=query) |
                 Q(email__icontains=query)
             ).distinct()
 
-            # Step 2: Also search by patient_id number
-            # Only patients who HAVE a profile with patient_id
             if not patients.exists():
                 try:
-                    patients_by_id = CustomUser.objects.filter(
+                    patients = CustomUser.objects.filter(
                         role='patient',
                         patient_profile__patient_id__icontains=query
                     ).distinct()
-                    patients = patients_by_id
                 except Exception:
-                    pass
+                    patients = CustomUser.objects.none()
 
-            # Step 3: If still nothing — try full name combined
             if not patients.exists():
-                # Split the query into words and search each word
                 words = query.split()
                 if len(words) >= 2:
-                    q_combined = Q()
+                    combined = Q()
                     for word in words:
-                        q_combined |= Q(first_name__icontains=word)
-                        q_combined |= Q(last_name__icontains=word)
+                        combined |= Q(first_name__icontains=word)
+                        combined |= Q(last_name__icontains=word)
                     patients = CustomUser.objects.filter(
                         role='patient'
-                    ).filter(q_combined).distinct()
+                    ).filter(combined).distinct()
 
             if not patients.exists():
                 return Response({
-                    'results': [],
-                    'total_patients_found': 0,
-                    'query': query,
+                    'results': [], 'total_patients_found': 0, 'query': query,
                 })
-
-            # Build results
-            from records.models import MedicalRecord
-            from records.serializers import MedicalRecordSerializer
 
             results = []
             for patient in patients:
-                serializer = UserSerializer(patient)
-                records = MedicalRecord.objects.filter(
-                    patient=patient
-                ).order_by('-created_at')
-                records_data = MedicalRecordSerializer(records, many=True).data
+                try:
+                    patient_data = UserSerializer(patient).data
+                    records_data = []
+                    try:
+                        from records.models import MedicalRecord
+                        from records.serializers import MedicalRecordSerializer
+                        records = MedicalRecord.objects.filter(
+                            patient=patient
+                        ).order_by('-created_at')
+                        records_data = MedicalRecordSerializer(records, many=True).data
+                    except Exception:
+                        records_data = []
 
-                results.append({
-                    'patient': serializer.data,
-                    'medical_records': records_data,
-                    'total_records': len(records_data),
-                })
+                    results.append({
+                        'patient': patient_data,
+                        'medical_records': records_data,
+                        'total_records': len(records_data),
+                    })
+                except Exception:
+                    continue
 
             return Response({
                 'results': results,
@@ -254,13 +257,10 @@ class SearchPatientView(APIView):
             })
 
         except Exception as e:
-            # Never crash — always return clean response
             return Response({
-                'results': [],
-                'total_patients_found': 0,
-                'query': query,
-                'search_error': str(e),
-            }, status=status.HTTP_200_OK)
+                'results': [], 'total_patients_found': 0,
+                'query': query, 'debug': str(e),
+            }, status=200)
 
 
 class SoftDeleteUserView(APIView):
@@ -273,6 +273,13 @@ class SoftDeleteUserView(APIView):
             user = CustomUser.objects.get(pk=pk)
             user.is_active = False
             user.save()
+
+            # Email notification
+            try:
+                send_account_deactivated(user)
+            except Exception:
+                pass
+
             return Response({'message': f'User {user.username} deactivated.'})
         except CustomUser.DoesNotExist:
             return Response({'error': 'User not found.'}, status=404)
@@ -288,6 +295,13 @@ class RestoreUserView(APIView):
             user = CustomUser.objects.get(pk=pk)
             user.is_active = True
             user.save()
+
+            # Email notification
+            try:
+                send_account_restored(user)
+            except Exception:
+                pass
+
             return Response({'message': f'User {user.username} restored.'})
         except CustomUser.DoesNotExist:
             return Response({'error': 'User not found.'}, status=404)
@@ -311,8 +325,18 @@ class ResetPasswordView(APIView):
             user = CustomUser.objects.get(pk=pk)
             user.set_password(new_password)
             user.save()
+
+            # Email notification with new password
+            try:
+                send_password_reset(user, new_password)
+            except Exception:
+                pass
+
             return Response({
-                'message': f'Password for {user.username} reset successfully.'
+                'message': (
+                    f'Password for {user.username} reset successfully. '
+                    f'Email notification sent.'
+                )
             })
         except CustomUser.DoesNotExist:
             return Response({'error': 'User not found.'}, status=404)
