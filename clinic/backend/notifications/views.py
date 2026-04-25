@@ -56,7 +56,9 @@ class MarkNotificationReadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        Notification.objects.filter(pk=pk, user=request.user).update(is_read=True)
+        Notification.objects.filter(
+            pk=pk, user=request.user
+        ).update(is_read=True)
         return Response({'message': 'Marked as read.'})
 
 
@@ -198,6 +200,7 @@ class SendEmailNotificationView(APIView):
 
 
 class EmailNotificationLogListView(APIView):
+    """Admin only — view email notification history."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -210,6 +213,7 @@ class EmailNotificationLogListView(APIView):
 
 
 class EmailNotificationLogDetailView(APIView):
+    """Admin only — view detail of one email log."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -222,7 +226,30 @@ class EmailNotificationLogDetailView(APIView):
             return Response({'error': 'Log not found.'}, status=404)
 
 
+class DeleteEmailLogView(APIView):
+    """
+    Admin only — permanently delete an email log record.
+    This only deletes the log entry.
+    Emails that were already sent cannot be recalled.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        if request.user.role != 'admin':
+            return Response({'error': 'Unauthorized.'}, status=403)
+        try:
+            log = EmailNotificationLog.objects.get(pk=pk)
+            subject = log.subject
+            log.delete()
+            return Response({
+                'message': f'Email log "{subject}" deleted successfully.'
+            })
+        except EmailNotificationLog.DoesNotExist:
+            return Response({'error': 'Log not found.'}, status=404)
+
+
 class RateLimitStatusView(APIView):
+    """Shows current rate limit status for the requesting user."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):

@@ -34,13 +34,10 @@ class RegisterView(APIView):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
-
-            # Send welcome email in background
             try:
                 send_welcome_email(user)
             except Exception:
                 pass
-
             return Response(
                 {
                     'message': (
@@ -273,13 +270,10 @@ class SoftDeleteUserView(APIView):
             user = CustomUser.objects.get(pk=pk)
             user.is_active = False
             user.save()
-
-            # Email notification
             try:
                 send_account_deactivated(user)
             except Exception:
                 pass
-
             return Response({'message': f'User {user.username} deactivated.'})
         except CustomUser.DoesNotExist:
             return Response({'error': 'User not found.'}, status=404)
@@ -295,14 +289,48 @@ class RestoreUserView(APIView):
             user = CustomUser.objects.get(pk=pk)
             user.is_active = True
             user.save()
-
-            # Email notification
             try:
                 send_account_restored(user)
             except Exception:
                 pass
-
             return Response({'message': f'User {user.username} restored.'})
+        except CustomUser.DoesNotExist:
+            return Response({'error': 'User not found.'}, status=404)
+
+
+class DeleteUserView(APIView):
+    """
+    Permanently delete a user from the system.
+    Admin only. Cannot delete own account.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        if request.user.role != 'admin':
+            return Response({'error': 'Unauthorized.'}, status=403)
+
+        # Prevent admin from deleting their own account
+        if str(request.user.pk) == str(pk):
+            return Response(
+                {'error': 'You cannot delete your own admin account.'},
+                status=400,
+            )
+
+        try:
+            user = CustomUser.objects.get(pk=pk)
+
+            # Prevent deleting other admins
+            if user.role == 'admin':
+                return Response(
+                    {'error': 'Admin accounts cannot be deleted.'},
+                    status=400,
+                )
+
+            username = user.username
+            user.delete()
+            return Response({
+                'message': f'User "{username}" has been permanently deleted.'
+            })
         except CustomUser.DoesNotExist:
             return Response({'error': 'User not found.'}, status=404)
 
@@ -325,13 +353,10 @@ class ResetPasswordView(APIView):
             user = CustomUser.objects.get(pk=pk)
             user.set_password(new_password)
             user.save()
-
-            # Email notification with new password
             try:
                 send_password_reset(user, new_password)
             except Exception:
                 pass
-
             return Response({
                 'message': (
                     f'Password for {user.username} reset successfully. '
